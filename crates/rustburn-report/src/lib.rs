@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use askama::Template;
-use rustburn_core::model::{RepoReport, Severity};
+use rustburn_core::model::{HistoricalSnapshot, HistoryRewriteState, RepoReport, Severity};
 
 /// HTML 报告模板
 #[derive(Template)]
@@ -16,6 +16,7 @@ struct ReportTemplate<'a> {
     report_data_json: String,
 }
 
+#[allow(dead_code)]
 impl<'a> ReportTemplate<'a> {
     /// 根据热度分数返回 CSS 类名
     fn score_class(&self, score: &f64) -> &'static str {
@@ -30,6 +31,19 @@ impl<'a> ReportTemplate<'a> {
         }
     }
 
+    /// 根据热度分数返回风险等级文字
+    fn risk_level(&self, score: &f64) -> &'static str {
+        if *score < 30.0 {
+            "低风险"
+        } else if *score < 60.0 {
+            "中风险"
+        } else if *score < 80.0 {
+            "高风险"
+        } else {
+            "严重风险"
+        }
+    }
+
     /// 根据严重度返回 CSS 类名
     fn severity_class(&self, severity: &Severity) -> &'static str {
         match *severity {
@@ -41,14 +55,108 @@ impl<'a> ReportTemplate<'a> {
         }
     }
 
-    /// 格式化浮点数
-    fn format_f64(&self, value: &f64, precision: usize) -> String {
-        format!("{:.prec$}", value, prec = precision)
-    }
-
     /// 计算总代码行数
     fn total_loc(&self) -> u32 {
         self.report.files.iter().map(|f| f.raw.loc).sum()
+    }
+
+    /// 格式化 f64（通过引用，用于模板中的字段访问）
+    fn fmt_f64(&self, value: &f64, precision: usize) -> String {
+        format!("{:.prec$}", value, prec = precision)
+    }
+
+    /// 格式化 f64（通过值，用于模板中的方法返回值/表达式）
+    fn fmt_f64v(&self, value: f64, precision: usize) -> String {
+        format!("{:.prec$}", value, prec = precision)
+    }
+
+    /// 格式化总代码行数（带千分位）
+    fn format_total_loc(&self) -> String {
+        let s = self.total_loc().to_string();
+        let mut result = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                result.push(',');
+            }
+            result.push(c);
+        }
+        result.chars().rev().collect()
+    }
+
+    /// 格式化文件数量（带千分位，接受 &usize）
+    fn format_number_usize(&self, value: &usize) -> String {
+        let s = value.to_string();
+        let mut result = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                result.push(',');
+            }
+            result.push(c);
+        }
+        result.chars().rev().collect()
+    }
+
+    /// 计算平均置信度
+    fn avg_confidence(&self) -> f64 {
+        if self.report.files.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self
+            .report
+            .files
+            .iter()
+            .map(|f| f.consistency.coefficient)
+            .sum();
+        sum / self.report.files.len() as f64
+    }
+
+    /// 低置信度文件数量
+    fn low_confidence_count(&self) -> usize {
+        self.report
+            .files
+            .iter()
+            .filter(|f| f.consistency.coefficient < 0.7)
+            .count()
+    }
+
+    /// Top 5% 风险文件数量
+    fn top_risk_count(&self) -> usize {
+        self.report.top_risk_files.len()
+    }
+
+    /// Top 5% 风险文件占比百分比（格式化为字符串）
+    fn top_risk_percentage_str(&self) -> String {
+        format!("{:.1}", self.top_risk_percentage())
+    }
+
+    /// Top 5% 风险文件占比（f64）
+    fn top_risk_percentage(&self) -> f64 {
+        let file_count = self.report.analysis_metadata.file_count.max(1) as f64;
+        (self.report.top_risk_files.len() as f64 / file_count) * 100.0
+    }
+
+    /// 计算依赖漏洞总数
+    fn total_vulnerabilities(&self) -> usize {
+        self.report.dependency_findings.len()
+    }
+
+    /// 历史重写检测是否确认为 Detected
+    fn is_history_rewrite_detected(&self, state: &HistoryRewriteState) -> bool {
+        matches!(state, HistoryRewriteState::Detected)
+    }
+
+    /// 历史重写检测是否确认为 NotDetected
+    fn is_history_rewrite_not_detected(&self, state: &HistoryRewriteState) -> bool {
+        matches!(state, HistoryRewriteState::NotDetected)
+    }
+
+    /// 计算趋势历史中的平均 base_risk_score
+    fn avg_trend_history_risk(&self, history: &[HistoricalSnapshot]) -> f64 {
+        if history.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = history.iter().map(|s| s.base_risk_score).sum();
+        sum / history.len() as f64
     }
 }
 

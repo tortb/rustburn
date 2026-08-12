@@ -204,7 +204,7 @@
             </div>
             <div class="metadata-item">
                 <div class="metadata-label">分析耗时</div>
-                <div class="metadata-value">{{ self.format_f64(report.analysis_metadata.elapsed_seconds, 2) }} 秒</div>
+                <div class="metadata-value">{{ self.fmt_f64(report.analysis_metadata.elapsed_seconds, 2) }} 秒</div>
             </div>
             <div class="metadata-item">
                 <div class="metadata-label">支持语言</div>
@@ -217,7 +217,7 @@
         <h2>仓库总体评分</h2>
         <div style="text-align: center; padding: 20px;">
             <div style="font-size: 3em; font-weight: bold; color: #667eea;">
-                {{ self.format_f64(report.repo_total_heat_score, 2) }}
+                {{ self.fmt_f64(report.repo_total_heat_score, 2) }}
             </div>
             <div style="color: #666; margin-top: 10px;">
                 技术债热度分数（0-100，越低越好）
@@ -267,15 +267,15 @@
                     <td>{{ file.raw.loc }}</td>
                     <td>
                         <span class="score {{ self.score_class(file.final_heat_score) }}">
-                            {{ self.format_f64(file.final_heat_score, 2) }}
+                            {{ self.fmt_f64(file.final_heat_score, 2) }}
                         </span>
                     </td>
-                    <td>{{ self.format_f64(file.base_risk_score, 2) }}</td>
-                    <td>{{ self.format_f64(file.trend_coefficient, 3) }}</td>
-                    <td>{{ self.format_f64(file.consistency.coefficient, 2) }}</td>
-                    <td>{{ self.format_f64(file.percentiles.complexity_risk, 1) }}</td>
-                    <td>{{ self.format_f64(file.percentiles.history_risk, 1) }}</td>
-                    <td>{{ self.format_f64(file.percentiles.dependency_risk, 1) }}</td>
+                    <td>{{ self.fmt_f64(file.base_risk_score, 2) }}</td>
+                    <td>{{ self.fmt_f64(file.trend_coefficient, 3) }}</td>
+                    <td>{{ self.fmt_f64(file.consistency.coefficient, 2) }}</td>
+                    <td>{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</td>
+                    <td>{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</td>
+                    <td>{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -312,7 +312,7 @@
                     <td>{{ file.raw.commit_count }}</td>
                     <td>
                         <span class="score {{ self.score_class(file.final_heat_score) }}">
-                            {{ self.format_f64(file.final_heat_score, 2) }}
+                            {{ self.fmt_f64(file.final_heat_score, 2) }}
                         </span>
                     </td>
                     <td>
@@ -339,11 +339,11 @@
                             </div>
                             <div class="metric">
                                 <span class="metric-label">嵌套 if 比例:</span>
-                                <span class="metric-value">{{ self.format_f64(file.raw.nested_if_ratio, 2) }}</span>
+                                <span class="metric-value">{{ self.fmt_f64(file.raw.nested_if_ratio, 2) }}</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">平均函数长度:</span>
-                                <span class="metric-value">{{ self.format_f64(file.raw.avg_function_length, 1) }}</span>
+                                <span class="metric-value">{{ self.fmt_f64(file.raw.avg_function_length, 1) }}</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">最大函数长度:</span>
@@ -376,30 +376,30 @@
 
                             <h4>维度综合值</h4>
                             <div class="formula-box">
-                                复杂度综合值: {{ self.format_f64(file.dimension_values.complexity_value, 2) }}<br>
-                                历史综合值: {{ self.format_f64(file.dimension_values.history_value, 2) }}<br>
-                                依赖综合值: {{ self.format_f64(file.dimension_values.dependency_value, 2) }}
+                                复杂度综合值: {{ self.fmt_f64(file.dimension_values.complexity_value, 2) }}<br>
+                                历史综合值: {{ self.fmt_f64(file.dimension_values.history_value, 2) }}<br>
+                                依赖综合值: {{ self.fmt_f64(file.dimension_values.dependency_value, 2) }}
                             </div>
 
                             <h4>Percentile 分数</h4>
                             <div class="formula-box">
-                                复杂度风险: {{ self.format_f64(file.percentiles.complexity_risk, 2) }}<br>
-                                历史风险: {{ self.format_f64(file.percentiles.history_risk, 2) }}<br>
-                                依赖风险: {{ self.format_f64(file.percentiles.dependency_risk, 2) }}
+                                复杂度风险: {{ self.fmt_f64(file.percentiles.complexity_risk, 2) }}<br>
+                                历史风险: {{ self.fmt_f64(file.percentiles.history_risk, 2) }}<br>
+                                依赖风险: {{ self.fmt_f64(file.percentiles.dependency_risk, 2) }}
                             </div>
 
                             <h4>评分计算</h4>
                             <div class="formula-box">
-                                基础风险分数: {{ self.format_f64(file.base_risk_score, 2) }}<br>
-                                趋势系数: {{ self.format_f64(file.trend_coefficient, 3) }}<br>
-                                最终热度分数: {{ self.format_f64(file.final_heat_score, 2) }}<br>
-                                置信度系数: {{ self.format_f64(file.consistency.coefficient, 2) }}
+                                基础风险分数: {{ self.fmt_f64(file.base_risk_score, 2) }}<br>
+                                趋势系数: {{ self.fmt_f64(file.trend_coefficient, 3) }}<br>
+                                最终热度分数: {{ self.fmt_f64(file.final_heat_score, 2) }}<br>
+                                置信度系数: {{ self.fmt_f64(file.consistency.coefficient, 2) }}
                             </div>
 
                             {% if file.consistency.coefficient < 0.7 %}
                             <div class="anomaly">
                                 数据可信度低<br>
-                                {% if matches!(file.consistency.history_rewrite, rustburn_core::model::HistoryRewriteState::Detected) %}
+                                {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}
                                 - 疑似历史重写<br>
                                 {% endif %}
                                 {% if file.consistency.coverage_report_stale %}
