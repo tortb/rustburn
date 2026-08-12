@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["analyze_git_history","detect_history_rewrite","is_empty_repo"],"struct":["FileGitMetrics"]};

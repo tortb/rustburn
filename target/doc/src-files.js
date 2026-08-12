@@ -1,2 +1,0 @@
-createSrcSidebar('[["rustburn",["",[],["main.rs"]]],["rustburn_core",["",[],["complexity.rs","dependency.rs","git_history.rs","lib.rs","model.rs","scoring.rs"]]],["rustburn_report",["",[],["lib.rs"]]]]');
-//{"start":19,"fragment_lengths":[32,110,39]}

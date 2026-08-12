@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["complexity","dependency","git_history","model","scoring"]};

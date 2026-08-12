@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["DependencyError"],"fn":["analyze_dependencies","cargo_to_rust_import","extract_imports_from_source","parse_cargo_lock","parse_package_lock","query_osv"],"struct":["Dependency","DependencyAnalysis"]};

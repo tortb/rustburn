@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["generate_html_report","write_report"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["analyze_complexity","detect_language"],"struct":["FileComplexity"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["AnomalyFlag","DependencySeverity","HistoryRewriteState","Language","OutputFormat","Severity"],"fn":["cvss_to_severity"],"struct":["AnalysisMetadata","ConsistencyReport","DependencyFinding","DimensionValues","FilePercentileScores","FileRawMetrics","FileScore","HistoricalSnapshot","RepoReport","ScanConfig"]};

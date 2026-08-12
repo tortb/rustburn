@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["calculate_base_risk_score","calculate_consistency_coefficient","calculate_dimension_values","calculate_final_heat_score","calculate_percentile_scores","calculate_repo_total_heat_score","calculate_trend_coefficient","get_top_risk_files"]};
