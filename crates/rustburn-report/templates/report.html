@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rustburn 技术债分析报告</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            margin: 0 0 10px 0;
+        }
+        .metadata {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .metadata-item {
+            background: rgba(255,255,255,0.2);
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .metadata-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        .metadata-value {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .section {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .section h2 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .score {
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .score-low {
+            background: #d4edda;
+            color: #155724;
+        }
+        .score-medium {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .score-high {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .score-critical {
+            background: #721c24;
+            color: white;
+        }
+        .metric {
+            display: inline-block;
+            margin-right: 15px;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .metric-value {
+            font-weight: bold;
+            color: #333;
+        }
+        .warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .anomaly {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .no-data {
+            text-align: center;
+            color: #999;
+            padding: 20px;
+        }
+        .treemap-container {
+            width: 100%;
+            height: 400px;
+            position: relative;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .treemap-item {
+            position: absolute;
+            border: 1px solid rgba(255,255,255,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .treemap-item:hover {
+            opacity: 0.8;
+        }
+        .file-detail {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .file-detail h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .formula-box {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        .chart-container {
+            width: 100%;
+            height: 200px;
+            margin: 15px 0;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .version-info {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 30px;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔥 Rustburn 技术债分析报告</h1>
+        <div class="metadata">
+            <div class="metadata-item">
+                <div class="metadata-label">仓库路径</div>
+                <div class="metadata-value">{{ report.repo_path }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">扫描时间</div>
+                <div class="metadata-value">{{ report.scanned_at }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">文件数量</div>
+                <div class="metadata-value">{{ report.analysis_metadata.file_count }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">总代码行数</div>
+                <div class="metadata-value">{{ self.total_loc() }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">分析耗时</div>
+                <div class="metadata-value">{{ self.format_f64(report.analysis_metadata.elapsed_seconds, 2) }} 秒</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">支持语言</div>
+                <div class="metadata-value">{{ report.analysis_metadata.supported_languages.join(", ") }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>📊 仓库总体评分</h2>
+        <div style="text-align: center; padding: 20px;">
+            <div style="font-size: 3em; font-weight: bold; color: #667eea;">
+                {{ self.format_f64(report.repo_total_heat_score, 2) }}
+            </div>
+            <div style="color: #666; margin-top: 10px;">
+                技术债热度分数（0-100，越低越好）
+            </div>
+        </div>
+        {% if report.analysis_metadata.history_truncated %}
+        <div class="warning">
+            ⚠️ 历史被截断：实际 commit 数量超过 max_commits ({{ report.analysis_metadata.max_commits }})
+        </div>
+        {% endif %}
+        {% if report.analysis_metadata.offline %}
+        <div class="warning">
+            ℹ️ 离线模式：依赖风险维度未启用
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="section">
+        <h2>🗺️ 文件 Treemap</h2>
+        <p>面积表示代码行数，颜色表示风险分数（红色=高风险，绿色=低风险）</p>
+        <div class="treemap-container" id="treemap"></div>
+    </div>
+
+    {% if !report.top_risk_files.is_empty() %}
+    <div class="section">
+        <h2>🔥 高风险文件 (Top 5%)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>文件路径</th>
+                    <th>语言</th>
+                    <th>代码行数</th>
+                    <th>最终分数</th>
+                    <th>基础分数</th>
+                    <th>趋势系数</th>
+                    <th>置信度</th>
+                    <th>复杂度%</th>
+                    <th>历史%</th>
+                    <th>依赖%</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for file in report.top_risk_files %}
+                <tr>
+                    <td>{{ file.raw.path }}</td>
+                    <td>{{ file.raw.language }}</td>
+                    <td>{{ file.raw.loc }}</td>
+                    <td>
+                        <span class="score {{ self.score_class(file.final_heat_score) }}">
+                            {{ self.format_f64(file.final_heat_score, 2) }}
+                        </span>
+                    </td>
+                    <td>{{ self.format_f64(file.base_risk_score, 2) }}</td>
+                    <td>{{ self.format_f64(file.trend_coefficient, 3) }}</td>
+                    <td>{{ self.format_f64(file.consistency.coefficient, 2) }}</td>
+                    <td>{{ self.format_f64(file.percentiles.complexity_risk, 1) }}</td>
+                    <td>{{ self.format_f64(file.percentiles.history_risk, 1) }}</td>
+                    <td>{{ self.format_f64(file.percentiles.dependency_risk, 1) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <div class="section">
+        <h2>📁 所有文件详情</h2>
+        {% if report.files.is_empty() %}
+        <div class="no-data">暂无数据</div>
+        {% else %}
+        <table>
+            <thead>
+                <tr>
+                    <th>文件路径</th>
+                    <th>语言</th>
+                    <th>代码行数</th>
+                    <th>圈复杂度</th>
+                    <th>最大嵌套</th>
+                    <th>提交次数</th>
+                    <th>热度分数</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for file in report.files %}
+                <tr>
+                    <td>{{ file.raw.path }}</td>
+                    <td>{{ file.raw.language }}</td>
+                    <td>{{ file.raw.loc }}</td>
+                    <td>{{ file.raw.cyclomatic_complexity }}</td>
+                    <td>{{ file.raw.max_if_nesting_depth }}</td>
+                    <td>{{ file.raw.commit_count }}</td>
+                    <td>
+                        <span class="score {{ self.score_class(file.final_heat_score) }}">
+                            {{ self.format_f64(file.final_heat_score, 2) }}
+                        </span>
+                    </td>
+                    <td>
+                        <button onclick="toggleDetail('{{ file.raw.path }}')">详情</button>
+                    </td>
+                </tr>
+                <tr id="detail-{{ file.raw.path }}" style="display: none;">
+                    <td colspan="8">
+                        <div class="file-detail">
+                            <h3>{{ file.raw.path }}</h3>
+                            
+                            <h4>原始指标</h4>
+                            <div class="metric">
+                                <span class="metric-label">代码行数:</span>
+                                <span class="metric-value">{{ file.raw.loc }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">圈复杂度:</span>
+                                <span class="metric-value">{{ file.raw.cyclomatic_complexity }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">最大嵌套深度:</span>
+                                <span class="metric-value">{{ file.raw.max_if_nesting_depth }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">嵌套 if 比例:</span>
+                                <span class="metric-value">{{ self.format_f64(file.raw.nested_if_ratio, 2) }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">平均函数长度:</span>
+                                <span class="metric-value">{{ self.format_f64(file.raw.avg_function_length, 1) }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">最大函数长度:</span>
+                                <span class="metric-value">{{ file.raw.max_function_length }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">提交次数:</span>
+                                <span class="metric-value">{{ file.raw.commit_count }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">不同作者:</span>
+                                <span class="metric-value">{{ file.raw.distinct_authors }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">最近修改:</span>
+                                <span class="metric-value">{{ file.raw.last_modified_days_ago }} 天前</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">事故提交:</span>
+                                <span class="metric-value">{{ file.raw.incident_commit_count }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">最高 CVE:</span>
+                                <span class="metric-value">{{ file.raw.max_cve_severity }}</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">CVE 数量:</span>
+                                <span class="metric-value">{{ file.raw.cve_count }}</span>
+                            </div>
+
+                            <h4>维度综合值</h4>
+                            <div class="formula-box">
+                                复杂度综合值: {{ self.format_f64(file.dimension_values.complexity_value, 2) }}<br>
+                                历史综合值: {{ self.format_f64(file.dimension_values.history_value, 2) }}<br>
+                                依赖综合值: {{ self.format_f64(file.dimension_values.dependency_value, 2) }}
+                            </div>
+
+                            <h4>Percentile 分数</h4>
+                            <div class="formula-box">
+                                复杂度风险: {{ self.format_f64(file.percentiles.complexity_risk, 2) }}<br>
+                                历史风险: {{ self.format_f64(file.percentiles.history_risk, 2) }}<br>
+                                依赖风险: {{ self.format_f64(file.percentiles.dependency_risk, 2) }}
+                            </div>
+
+                            <h4>评分计算</h4>
+                            <div class="formula-box">
+                                基础风险分数: {{ self.format_f64(file.base_risk_score, 2) }}<br>
+                                趋势系数: {{ self.format_f64(file.trend_coefficient, 3) }}<br>
+                                最终热度分数: {{ self.format_f64(file.final_heat_score, 2) }}<br>
+                                置信度系数: {{ self.format_f64(file.consistency.coefficient, 2) }}
+                            </div>
+
+                            {% if file.consistency.coefficient < 0.7 %}
+                            <div class="anomaly">
+                                ⚠️ 数据可信度低<br>
+                                {% if matches!(file.consistency.history_rewrite, rustburn_core::model::HistoryRewriteState::Detected) %}
+                                - 疑似历史重写<br>
+                                {% endif %}
+                                {% if file.consistency.coverage_report_stale %}
+                                - 覆盖率报告过期<br>
+                                {% endif %}
+                                {% if file.consistency.lockfile_mismatch %}
+                                - Lockfile 不匹配<br>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+
+                            {% if !file.trend_history.is_empty() %}
+                            <h4>趋势图</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-{{ file.raw.path }}" width="600" height="200"></canvas>
+                            </div>
+                            {% endif %}
+
+                            {% if file.raw.parse_incomplete %}
+                            <div class="warning">
+                                ⚠️ 语法解析不完整
+                            </div>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    {% if !report.dependency_findings.is_empty() %}
+    <div class="section">
+        <h2>🔒 依赖安全问题</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>包名</th>
+                    <th>版本</th>
+                    <th>生态系统</th>
+                    <th>漏洞 ID</th>
+                    <th>严重度</th>
+                    <th>描述</th>
+                    <th>影响文件</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for finding in report.dependency_findings %}
+                <tr>
+                    <td>{{ finding.package_name }}</td>
+                    <td>{{ finding.version }}</td>
+                    <td>{{ finding.ecosystem }}</td>
+                    <td>{{ finding.id }}</td>
+                    <td>
+                        <span class="score {{ self.severity_class(finding.severity) }}">
+                            {{ finding.severity }}
+                            {% if finding.severity_estimated %}(估算){% endif %}
+                        </span>
+                    </td>
+                    <td>{{ finding.summary }}</td>
+                    <td>{{ finding.affected_files.len() }} 个文件</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if !report.anomalies.is_empty() %}
+    <div class="section">
+        <h2>⚠️ 异常检测</h2>
+        {% for anomaly in report.anomalies %}
+        <div class="anomaly">
+            疑似异常: {{ anomaly }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if !report.warnings.is_empty() %}
+    <div class="section">
+        <h2>⚠️ 警告信息</h2>
+        {% for warning in report.warnings %}
+        <div class="warning">{{ warning }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="section">
+        <h2>ℹ️ 分析元数据</h2>
+        <div class="metadata">
+            <div class="metadata-item">
+                <div class="metadata-label">最大提交数</div>
+                <div class="metadata-value">{{ report.analysis_metadata.max_commits }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">历史是否截断</div>
+                <div class="metadata-value">{% if report.analysis_metadata.history_truncated %}是{% else %}否{% endif %}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">离线模式</div>
+                <div class="metadata-value">{% if report.analysis_metadata.offline %}是{% else %}否{% endif %}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">OSV 状态</div>
+                <div class="metadata-value">{{ report.analysis_metadata.osv_status }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">跳过符号链接</div>
+                <div class="metadata-value">{{ report.analysis_metadata.skipped_symlinks }}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">跳过文件</div>
+                <div class="metadata-value">{{ report.analysis_metadata.skipped_files }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="version-info">
+        由 Rustburn v{{ report.rustburn_version }} 生成<br>
+        Schema 版本: {{ report.schema_version }}<br>
+        分析版本: {{ report.analysis_version }}
+    </div>
+
+    <script>
+        const REPORT_DATA = {{ report_data_json|safe }};
+
+        function toggleDetail(path) {
+            const row = document.getElementById('detail-' + path);
+            if (row.style.display === 'none') {
+                row.style.display = 'table-row';
+            } else {
+                row.style.display = 'none';
+            }
+        }
+
+        function getScoreColor(score) {
+            if (score < 30) return '#28a745';
+            if (score < 60) return '#ffc107';
+            if (score < 80) return '#fd7e14';
+            return '#dc3545';
+        }
+
+        function renderTreemap() {
+            const container = document.getElementById('treemap');
+            const files = REPORT_DATA.files.filter(f => f.raw.loc > 0);
+            
+            if (files.length === 0) return;
+
+            const totalLoc = files.reduce((sum, f) => sum + f.raw.loc, 0);
+            const containerWidth = container.offsetWidth;
+            const containerHeight = container.offsetHeight;
+
+            let x = 0, y = 0, maxHeight = 0;
+            let rowWidth = 0;
+
+            files.sort((a, b) => b.raw.loc - a.raw.loc);
+
+            for (const file of files) {
+                const area = (file.raw.loc / totalLoc) * (containerWidth * containerHeight);
+                const width = Math.max(50, Math.sqrt(area));
+                const height = area / width;
+
+                if (x + width > containerWidth) {
+                    x = 0;
+                    y += maxHeight;
+                    maxHeight = 0;
+                }
+
+                const item = document.createElement('div');
+                item.className = 'treemap-item';
+                item.style.left = x + 'px';
+                item.style.top = y + 'px';
+                item.style.width = width + 'px';
+                item.style.height = height + 'px';
+                item.style.backgroundColor = getScoreColor(file.final_heat_score);
+                item.title = `${file.raw.path}\nLOC: ${file.raw.loc}\n分数: ${file.final_heat_score.toFixed(2)}`;
+                item.textContent = file.raw.path.split('/').pop();
+
+                container.appendChild(item);
+
+                x += width;
+                maxHeight = Math.max(maxHeight, height);
+            }
+        }
+
+        function renderTrendCharts() {
+            for (const file of REPORT_DATA.files) {
+                if (file.trend_history && file.trend_history.length > 0) {
+                    const canvas = document.getElementById('chart-' + file.raw.path);
+                    if (!canvas) continue;
+
+                    const ctx = canvas.getContext('2d');
+                    const width = canvas.width;
+                    const height = canvas.height;
+                    const padding = 40;
+
+                    const data = file.trend_history;
+                    const maxScore = Math.max(...data.map(d => d.base_risk_score), 100);
+                    const minScore = Math.min(...data.map(d => d.base_risk_score), 0);
+
+                    ctx.clearRect(0, 0, width, height);
+
+                    // Draw axes
+                    ctx.strokeStyle = '#ddd';
+                    ctx.beginPath();
+                    ctx.moveTo(padding, padding);
+                    ctx.lineTo(padding, height - padding);
+                    ctx.lineTo(width - padding, height - padding);
+                    ctx.stroke();
+
+                    // Draw line
+                    ctx.strokeStyle = '#667eea';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+
+                    for (let i = 0; i < data.length; i++) {
+                        const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
+                        const y = height - padding - ((data[i].base_risk_score - minScore) / (maxScore - minScore)) * (height - 2 * padding);
+
+                        if (i === 0) {
+                            ctx.moveTo(x, y);
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+
+                    // Draw points
+                    ctx.fillStyle = '#667eea';
+                    for (let i = 0; i < data.length; i++) {
+                        const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
+                        const y = height - padding - ((data[i].base_risk_score - minScore) / (maxScore - minScore)) * (height - 2 * padding);
+                        ctx.beginPath();
+                        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                        ctx.fill();
+                    }
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            renderTreemap();
+            renderTrendCharts();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Commands"],"fn":["main","map_dependencies_to_files","parse_format","run_scan","scan_files"],"struct":["Cli","ScannedFile"]};

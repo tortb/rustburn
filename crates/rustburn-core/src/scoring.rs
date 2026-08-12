@@ -1,0 +1,683 @@
+//! 评分算法模块。
+//!
+//! 实现维度综合值、percentile、base_risk_score、consistency_coefficient、
+//! trend_coefficient、final_heat_score、repo_total_heat_score 计算。
+//! 所有公式严格遵循 spec.md 定义。
+
+use crate::model::{
+    DimensionValues, FilePercentileScores, FileRawMetrics, FileScore, HistoricalSnapshot,
+    HistoryRewriteState, Severity,
+};
+
+/// 计算维度综合值。
+///
+/// 根据 spec §68：
+/// - complexity_value = cyclomatic_complexity * 0.4 + max_if_nesting_depth * 15.0 * 0.4 + avg_function_length * 0.2
+/// - history_value = normalized_commit_count * 0.35 + normalized_distinct_authors * 0.10 + normalized_incident_commit_count * 0.45 + normalized_recency * 0.10
+/// - dependency_value = severity_score * 0.60 + normalized_cve_count * 0.25 + dependency_staleness * 0.15
+pub fn calculate_dimension_values(
+    metrics: &FileRawMetrics,
+    max_commit_count: u32,
+    max_author_count: u32,
+    max_incident_count: u32,
+    max_cve_count: u32,
+) -> DimensionValues {
+    // 复杂度综合值
+    let complexity_value = metrics.cyclomatic_complexity as f64 * 0.4
+        + metrics.max_if_nesting_depth as f64 * 15.0 * 0.4
+        + metrics.avg_function_length * 0.2;
+
+    // 历史综合值（需要归一化到 0-100）
+    let normalized_commit_count = normalize_value(metrics.commit_count, max_commit_count);
+    let normalized_authors = normalize_value(metrics.distinct_authors, max_author_count);
+    let normalized_incidents = normalize_value(metrics.incident_commit_count, max_incident_count);
+    let normalized_recency = calculate_recency_risk(metrics.last_modified_days_ago);
+
+    let history_value = normalized_commit_count * 0.35
+        + normalized_authors * 0.10
+        + normalized_incidents * 0.45
+        + normalized_recency * 0.10;
+
+    // 依赖综合值
+    let severity_score = match metrics.max_cve_severity {
+        Severity::None => 0.0,
+        Severity::Low => 25.0,
+        Severity::Medium => 50.0,
+        Severity::High => 75.0,
+        Severity::Critical => 100.0,
+    };
+    let normalized_cve_count = normalize_value(metrics.cve_count, max_cve_count);
+    let staleness_score = metrics.dependency_staleness * 100.0;
+
+    let dependency_value =
+        severity_score * 0.60 + normalized_cve_count * 0.25 + staleness_score * 0.15;
+
+    DimensionValues {
+        complexity_value: complexity_value.clamp(0.0, 100.0),
+        history_value: history_value.clamp(0.0, 100.0),
+        dependency_value: dependency_value.clamp(0.0, 100.0),
+    }
+}
+
+/// 将值归一化到 0-100 范围。
+fn normalize_value(value: u32, max_value: u32) -> f64 {
+    if max_value == 0 {
+        return 0.0;
+    }
+    ((value as f64 / max_value as f64) * 100.0).clamp(0.0, 100.0)
+}
+
+/// 计算新鲜度风险（越新风险越低）。
+///
+/// 根据 last_modified_days_ago：
+/// - 0-30 天：0（低风险）
+/// - 31-90 天：33
+/// - 91-180 天：66
+/// - >180 天：100（高风险）
+fn calculate_recency_risk(last_modified_days_ago: u32) -> f64 {
+    match last_modified_days_ago {
+        0..=30 => 0.0,
+        31..=90 => 33.0,
+        91..=180 => 66.0,
+        _ => 100.0,
+    }
+}
+
+/// 计算 percentile 分数。
+///
+/// 根据 spec §70-71：
+/// - 按升序排序
+/// - 相同值获得相同 rank（取最后位置）
+/// - percentile = r / file_count * 100，r 从 1 开始
+/// - 单文件仓库：percentile = 50 并产生 warning
+pub fn calculate_percentile_scores(
+    _metrics: &FileRawMetrics,
+    all_dimension_values: &[DimensionValues],
+) -> FilePercentileScores {
+    if all_dimension_values.is_empty() {
+        return FilePercentileScores {
+            complexity_risk: 50.0,
+            history_risk: 50.0,
+            dependency_risk: 50.0,
+        };
+    }
+
+    // 单文件仓库特殊处理
+    if all_dimension_values.len() == 1 {
+        return FilePercentileScores {
+            complexity_risk: 50.0,
+            history_risk: 50.0,
+            dependency_risk: 50.0,
+        };
+    }
+
+    // 提取各维度的值
+    let complexity_values: Vec<f64> = all_dimension_values
+        .iter()
+        .map(|d| d.complexity_value)
+        .collect();
+    let history_values: Vec<f64> = all_dimension_values
+        .iter()
+        .map(|d| d.history_value)
+        .collect();
+    let dependency_values: Vec<f64> = all_dimension_values
+        .iter()
+        .map(|d| d.dependency_value)
+        .collect();
+
+    // 计算当前文件的维度值
+    let current_complexity = all_dimension_values
+        .iter()
+        .map(|d| d.complexity_value)
+        .next()
+        .unwrap_or(0.0);
+    let current_history = all_dimension_values
+        .iter()
+        .map(|d| d.history_value)
+        .next()
+        .unwrap_or(0.0);
+    let current_dependency = all_dimension_values
+        .iter()
+        .map(|d| d.dependency_value)
+        .next()
+        .unwrap_or(0.0);
+
+    FilePercentileScores {
+        complexity_risk: calculate_percentile(current_complexity, &complexity_values),
+        history_risk: calculate_percentile(current_history, &history_values),
+        dependency_risk: calculate_percentile(current_dependency, &dependency_values),
+    }
+}
+
+/// 计算单个值的 percentile。
+///
+/// 根据 spec §71：
+/// - 升序排序
+/// - 相同值取最后位置
+/// - r 从 1 开始
+/// - percentile = r / file_count * 100
+fn calculate_percentile(value: f64, all_values: &[f64]) -> f64 {
+    if all_values.is_empty() {
+        return 50.0;
+    }
+
+    let mut sorted = all_values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 找到 value 在排序数组中的最后位置（r 从 1 开始）
+    let mut r = 0;
+    for (i, &v) in sorted.iter().enumerate() {
+        if v <= value {
+            r = i + 1; // r 从 1 开始
+        }
+    }
+
+    if r == 0 {
+        return 0.0;
+    }
+
+    let percentile = (r as f64 / sorted.len() as f64) * 100.0;
+    percentile.clamp(0.0, 100.0)
+}
+
+/// 计算基础风险分数。
+///
+/// 根据 spec §72：
+/// base_risk_score = 100 - cbrt((100 - complexity_risk_pct) * (100 - history_risk_pct) * (100 - dependency_risk_pct))
+/// clamp(base_risk_score, 0, 100)
+pub fn calculate_base_risk_score(percentiles: &FilePercentileScores) -> f64 {
+    let complexity_risk_pct = percentiles.complexity_risk;
+    let history_risk_pct = percentiles.history_risk;
+    let dependency_risk_pct = percentiles.dependency_risk;
+
+    let product =
+        (100.0 - complexity_risk_pct) * (100.0 - history_risk_pct) * (100.0 - dependency_risk_pct);
+
+    let base_risk = 100.0 - product.cbrt();
+    base_risk.clamp(0.0, 100.0)
+}
+
+/// 计算一致性系数。
+///
+/// 根据 spec §74：
+/// - 初始：1.0
+/// - 如果 history_rewrite = detected，乘 0.7
+/// - 如果 coverage_report_stale = true，乘 0.85
+/// - 如果 lockfile_mismatch = true，乘 0.9
+/// - 最终：max(coefficient, 0.5)
+pub fn calculate_consistency_coefficient(
+    coverage_report_stale: bool,
+    history_rewrite: HistoryRewriteState,
+    lockfile_mismatch: bool,
+) -> f64 {
+    let mut coefficient: f64 = 1.0;
+
+    // 根据 spec §75，Unknown 状态不影响系数
+    if history_rewrite == HistoryRewriteState::Detected {
+        coefficient *= 0.7;
+    }
+
+    if coverage_report_stale {
+        coefficient *= 0.85;
+    }
+
+    if lockfile_mismatch {
+        coefficient *= 0.9;
+    }
+
+    coefficient.max(0.5)
+}
+
+/// 计算趋势系数。
+///
+/// 根据 spec §81：
+/// - historical_mean = 所有有效历史 snapshot base_risk_score 的算术平均
+/// - current = 最新有效 snapshot base_risk_score
+/// - trend_delta = (historical_mean - current) / max(historical_mean, 1.0)
+/// - trend_delta ∈ [-0.3, 0.3]
+/// - trend_coefficient = 1 - trend_delta * 0.3
+/// - 理论范围：[0.91, 1.09]
+///
+/// 如果没有足够有效历史 snapshot，返回 1.0
+pub fn calculate_trend_coefficient(snapshots: &[HistoricalSnapshot]) -> f64 {
+    if snapshots.is_empty() {
+        return 1.0;
+    }
+
+    // 计算历史平均
+    let historical_mean: f64 =
+        snapshots.iter().map(|s| s.base_risk_score).sum::<f64>() / snapshots.len() as f64;
+
+    // 获取当前（最新）值
+    let current = snapshots.last().map(|s| s.base_risk_score).unwrap_or(0.0);
+
+    // 计算 trend_delta
+    let trend_delta = (historical_mean - current) / historical_mean.max(1.0);
+
+    // 限制范围
+    let trend_delta = trend_delta.clamp(-0.3, 0.3);
+
+    // 计算趋势系数
+    let trend_coefficient = 1.0 - trend_delta * 0.3;
+
+    // 限制在理论范围内
+    trend_coefficient.clamp(0.91, 1.09)
+}
+
+/// 计算最终热度分数。
+///
+/// 根据 spec §84：
+/// final_heat_score = base_risk_score * trend_coefficient
+/// clamp(final_heat_score, 0, 100)
+///
+/// 注意：consistency_coefficient 不得参与 final_heat_score 计算（spec §76）
+pub fn calculate_final_heat_score(base_risk_score: f64, trend_coefficient: f64) -> f64 {
+    let score = base_risk_score * trend_coefficient;
+    score.clamp(0.0, 100.0)
+}
+
+/// 计算仓库总热度分数。
+///
+/// 根据 spec §85-88：
+/// - weighted_mean = sum(final_heat_score * file_loc_ratio)
+/// - file_loc_ratio = file_loc / total_repo_loc
+/// - top_files_avg = top_files.final_heat_score 的算术平均
+/// - top_5pct_penalty = top_files_avg * 0.2
+/// - repo_total_heat_score = weighted_mean + top_5pct_penalty
+/// - clamp(repo_total_heat_score, 0, 100)
+pub fn calculate_repo_total_heat_score(files: &[FileScore]) -> f64 {
+    if files.is_empty() {
+        return 0.0;
+    }
+
+    // 计算总 LOC
+    let total_loc: u32 = files.iter().map(|f| f.raw.loc).sum();
+
+    if total_loc == 0 {
+        return 0.0;
+    }
+
+    // 计算 LOC 加权平均
+    let weighted_mean: f64 = files
+        .iter()
+        .map(|f| {
+            let file_loc_ratio = f.raw.loc as f64 / total_loc as f64;
+            f.final_heat_score * file_loc_ratio
+        })
+        .sum();
+
+    // 计算 Top 5% 惩罚
+    let top_risk_files = get_top_risk_files(files);
+    let top_files_avg: f64 = if top_risk_files.is_empty() {
+        0.0
+    } else {
+        top_risk_files
+            .iter()
+            .map(|f| f.final_heat_score)
+            .sum::<f64>()
+            / top_risk_files.len() as f64
+    };
+    let top_5pct_penalty = top_files_avg * 0.2;
+
+    let repo_total = weighted_mean + top_5pct_penalty;
+    repo_total.clamp(0.0, 100.0)
+}
+
+/// 获取风险最高的文件（Top 5%）。
+///
+/// 根据 spec §87-89：
+/// - 数量：ceil(file_count * 0.05)，最少 1
+/// - 按 final_heat_score 降序
+/// - 分数相同则按路径字典序升序
+pub fn get_top_risk_files(files: &[FileScore]) -> Vec<FileScore> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted = files.to_vec();
+    sorted.sort_by(|a, b| {
+        b.final_heat_score
+            .partial_cmp(&a.final_heat_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.raw.path.cmp(&b.raw.path))
+    });
+
+    let count = (files.len() as f64 * 0.05).ceil() as usize;
+    let count = count.max(1).min(files.len());
+    sorted.into_iter().take(count).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ConsistencyReport, Language};
+
+    fn create_test_metrics() -> FileRawMetrics {
+        FileRawMetrics {
+            path: "test.rs".to_string(),
+            language: Language::Rust,
+            loc: 100,
+            cyclomatic_complexity: 10,
+            max_if_nesting_depth: 2,
+            nested_if_ratio: 0.3,
+            avg_function_length: 20.0,
+            max_function_length: 50,
+            commit_count: 5,
+            distinct_authors: 2,
+            last_modified_days_ago: 30,
+            incident_commit_count: 1,
+            max_cve_severity: Severity::None,
+            cve_count: 0,
+            dependency_staleness: 0.0,
+            dependency_data_incomplete: false,
+            parse_incomplete: false,
+        }
+    }
+
+    #[test]
+    fn test_dimension_values() {
+        let metrics = create_test_metrics();
+        let dims = calculate_dimension_values(&metrics, 10, 5, 3, 5);
+
+        // complexity_value = 10 * 0.4 + 2 * 15.0 * 0.4 + 20.0 * 0.2 = 4 + 12 + 4 = 20
+        assert!((dims.complexity_value - 20.0).abs() < 0.01);
+
+        // history_value 需要归一化
+        assert!(dims.history_value >= 0.0 && dims.history_value <= 100.0);
+
+        // dependency_value = 0 * 0.6 + 0 * 0.25 + 0 * 0.15 = 0
+        assert!((dims.dependency_value - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_percentile_single_file() {
+        let metrics = create_test_metrics();
+        let dims = vec![calculate_dimension_values(&metrics, 10, 5, 3, 5)];
+        let percentiles = calculate_percentile_scores(&metrics, &dims);
+
+        // 单文件仓库应返回 50
+        assert_eq!(percentiles.complexity_risk, 50.0);
+        assert_eq!(percentiles.history_risk, 50.0);
+        assert_eq!(percentiles.dependency_risk, 50.0);
+    }
+
+    #[test]
+    fn test_percentile_multiple_files() {
+        let mut metrics1 = create_test_metrics();
+        metrics1.cyclomatic_complexity = 5;
+
+        let mut metrics2 = create_test_metrics();
+        metrics2.cyclomatic_complexity = 10;
+
+        let mut metrics3 = create_test_metrics();
+        metrics3.cyclomatic_complexity = 15;
+
+        let dims = vec![
+            calculate_dimension_values(&metrics1, 20, 5, 3, 5),
+            calculate_dimension_values(&metrics2, 20, 5, 3, 5),
+            calculate_dimension_values(&metrics3, 20, 5, 3, 5),
+        ];
+
+        let percentiles = calculate_percentile_scores(&metrics2, &dims);
+
+        // metrics2 的复杂度应该在中位数附近
+        assert!(percentiles.complexity_risk > 0.0 && percentiles.complexity_risk <= 100.0);
+    }
+
+    #[test]
+    fn test_base_risk_score() {
+        let percentiles = FilePercentileScores {
+            complexity_risk: 50.0,
+            history_risk: 50.0,
+            dependency_risk: 50.0,
+        };
+
+        let base_risk = calculate_base_risk_score(&percentiles);
+
+        // base_risk = 100 - cbrt((100-50) * (100-50) * (100-50))
+        //           = 100 - cbrt(50 * 50 * 50)
+        //           = 100 - cbrt(125000)
+        //           = 100 - 50 = 50
+        assert!((base_risk - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_base_risk_score_extreme() {
+        let percentiles = FilePercentileScores {
+            complexity_risk: 100.0,
+            history_risk: 0.0,
+            dependency_risk: 0.0,
+        };
+
+        let base_risk = calculate_base_risk_score(&percentiles);
+
+        // base_risk = 100 - cbrt((100-100) * (100-0) * (100-0))
+        //           = 100 - cbrt(0) = 100
+        assert!((base_risk - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_consistency_coefficient() {
+        // 无问题
+        assert_eq!(
+            calculate_consistency_coefficient(false, HistoryRewriteState::NotDetected, false),
+            1.0
+        );
+
+        // 历史重写检测
+        assert_eq!(
+            calculate_consistency_coefficient(false, HistoryRewriteState::Detected, false),
+            0.7
+        );
+
+        // 覆盖率报告过期
+        assert_eq!(
+            calculate_consistency_coefficient(true, HistoryRewriteState::NotDetected, false),
+            0.85
+        );
+
+        // lockfile 不匹配
+        assert_eq!(
+            calculate_consistency_coefficient(false, HistoryRewriteState::NotDetected, true),
+            0.9
+        );
+
+        // 多个问题
+        let coeff = calculate_consistency_coefficient(true, HistoryRewriteState::Detected, true);
+        assert!((coeff - 0.7 * 0.85 * 0.9).abs() < 0.01);
+
+        // 下限保护
+        assert!(coeff >= 0.5);
+
+        // Unknown 状态不影响系数
+        assert_eq!(
+            calculate_consistency_coefficient(false, HistoryRewriteState::Unknown, false),
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_trend_coefficient() {
+        // 无历史数据
+        assert_eq!(calculate_trend_coefficient(&[]), 1.0);
+
+        // 趋势稳定
+        let snapshots = vec![
+            HistoricalSnapshot {
+                commit_sha: "a".to_string(),
+                commit_date: "2024-01-01".to_string(),
+                base_risk_score: 50.0,
+            },
+            HistoricalSnapshot {
+                commit_sha: "b".to_string(),
+                commit_date: "2024-01-02".to_string(),
+                base_risk_score: 50.0,
+            },
+        ];
+        let trend = calculate_trend_coefficient(&snapshots);
+        assert!((trend - 1.0).abs() < 0.01);
+
+        // 趋势上升（风险增加）
+        // historical_mean = (40 + 60) / 2 = 50
+        // current = 60
+        // trend_delta = (50 - 60) / 50 = -0.2
+        // trend_coefficient = 1 - (-0.2) * 0.3 = 1 + 0.06 = 1.06
+        let snapshots = vec![
+            HistoricalSnapshot {
+                commit_sha: "a".to_string(),
+                commit_date: "2024-01-01".to_string(),
+                base_risk_score: 40.0,
+            },
+            HistoricalSnapshot {
+                commit_sha: "b".to_string(),
+                commit_date: "2024-01-02".to_string(),
+                base_risk_score: 60.0,
+            },
+        ];
+        let trend = calculate_trend_coefficient(&snapshots);
+        assert!(trend > 1.0); // 风险增加，系数应该大于 1（放大最终分数）
+
+        // 趋势下降（风险降低）
+        // historical_mean = (60 + 40) / 2 = 50
+        // current = 40
+        // trend_delta = (50 - 40) / 50 = 0.2
+        // trend_coefficient = 1 - 0.2 * 0.3 = 1 - 0.06 = 0.94
+        let snapshots = vec![
+            HistoricalSnapshot {
+                commit_sha: "a".to_string(),
+                commit_date: "2024-01-01".to_string(),
+                base_risk_score: 60.0,
+            },
+            HistoricalSnapshot {
+                commit_sha: "b".to_string(),
+                commit_date: "2024-01-02".to_string(),
+                base_risk_score: 40.0,
+            },
+        ];
+        let trend = calculate_trend_coefficient(&snapshots);
+        assert!(trend < 1.0); // 风险降低，系数应该小于 1（缩小最终分数）
+
+        // 范围限制
+        assert!((0.91..=1.09).contains(&trend));
+    }
+
+    #[test]
+    fn test_final_heat_score() {
+        // 基础测试
+        let score = calculate_final_heat_score(50.0, 1.0);
+        assert_eq!(score, 50.0);
+
+        // 趋势系数影响
+        let score = calculate_final_heat_score(50.0, 1.05);
+        assert!((score - 52.5).abs() < 0.01);
+
+        // 限制在 [0, 100]
+        let score = calculate_final_heat_score(150.0, 1.0);
+        assert_eq!(score, 100.0);
+
+        let score = calculate_final_heat_score(-10.0, 1.0);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_repo_total_heat_score() {
+        let files = vec![
+            create_test_file_score("a.rs", 100, 50.0),
+            create_test_file_score("b.rs", 200, 70.0),
+        ];
+
+        let total = calculate_repo_total_heat_score(&files);
+
+        // weighted_mean = (50 * 100/300) + (70 * 200/300) = 16.67 + 46.67 = 63.33
+        // top_5pct_penalty = 70 * 0.2 = 14
+        // total = 63.33 + 14 = 77.33
+        assert!(total > 0.0 && total <= 100.0);
+    }
+
+    #[test]
+    fn test_repo_total_heat_score_empty() {
+        let files: Vec<FileScore> = vec![];
+        let total = calculate_repo_total_heat_score(&files);
+        assert_eq!(total, 0.0);
+    }
+
+    #[test]
+    fn test_repo_total_heat_score_zero_loc() {
+        let files = vec![create_test_file_score("a.rs", 0, 50.0)];
+        let total = calculate_repo_total_heat_score(&files);
+        assert_eq!(total, 0.0);
+    }
+
+    #[test]
+    fn test_top_risk_files() {
+        let files = vec![
+            create_test_file_score("a.rs", 100, 30.0),
+            create_test_file_score("b.rs", 100, 50.0),
+            create_test_file_score("c.rs", 100, 70.0),
+            create_test_file_score("d.rs", 100, 90.0),
+            create_test_file_score("e.rs", 100, 10.0),
+        ];
+
+        let top = get_top_risk_files(&files);
+        assert_eq!(top.len(), 1); // 5 * 0.05 = 0.25, ceil = 1
+        assert_eq!(top[0].raw.path, "d.rs");
+        assert_eq!(top[0].final_heat_score, 90.0);
+    }
+
+    #[test]
+    fn test_top_risk_files_tiebreaker() {
+        let files = vec![
+            create_test_file_score("b.rs", 100, 50.0),
+            create_test_file_score("a.rs", 100, 50.0),
+            create_test_file_score("c.rs", 100, 50.0),
+        ];
+
+        let top = get_top_risk_files(&files);
+        // 分数相同时应按路径字典序
+        assert_eq!(top[0].raw.path, "a.rs");
+    }
+
+    fn create_test_file_score(path: &str, loc: u32, heat: f64) -> FileScore {
+        FileScore {
+            raw: FileRawMetrics {
+                path: path.to_string(),
+                language: Language::Rust,
+                loc,
+                cyclomatic_complexity: 10,
+                max_if_nesting_depth: 2,
+                nested_if_ratio: 0.3,
+                avg_function_length: 20.0,
+                max_function_length: 50,
+                commit_count: 5,
+                distinct_authors: 2,
+                last_modified_days_ago: 30,
+                incident_commit_count: 1,
+                max_cve_severity: Severity::None,
+                cve_count: 0,
+                dependency_staleness: 0.0,
+                dependency_data_incomplete: false,
+                parse_incomplete: false,
+            },
+            percentiles: FilePercentileScores {
+                complexity_risk: 50.0,
+                history_risk: 50.0,
+                dependency_risk: 50.0,
+            },
+            dimension_values: DimensionValues {
+                complexity_value: 20.0,
+                history_value: 30.0,
+                dependency_value: 0.0,
+            },
+            base_risk_score: heat,
+            consistency: ConsistencyReport {
+                coverage_report_stale: false,
+                history_rewrite: HistoryRewriteState::Unknown,
+                lockfile_mismatch: false,
+                coefficient: 1.0,
+            },
+            trend_coefficient: 1.0,
+            final_heat_score: heat,
+            trend_history: vec![],
+        }
+    }
+}
