@@ -184,7 +184,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>🔥 Rustburn 技术债分析报告</h1>
+        <h1>Rustburn 技术债分析报告</h1>
         <div class="metadata">
             <div class="metadata-item">
                 <div class="metadata-label">仓库路径</div>
@@ -214,7 +214,7 @@
     </div>
 
     <div class="section">
-        <h2>📊 仓库总体评分</h2>
+        <h2>仓库总体评分</h2>
         <div style="text-align: center; padding: 20px;">
             <div style="font-size: 3em; font-weight: bold; color: #667eea;">
                 {{ self.format_f64(report.repo_total_heat_score, 2) }}
@@ -225,25 +225,25 @@
         </div>
         {% if report.analysis_metadata.history_truncated %}
         <div class="warning">
-            ⚠️ 历史被截断：实际 commit 数量超过 max_commits ({{ report.analysis_metadata.max_commits }})
+            历史被截断：实际 commit 数量超过 max_commits ({{ report.analysis_metadata.max_commits }})
         </div>
         {% endif %}
         {% if report.analysis_metadata.offline %}
         <div class="warning">
-            ℹ️ 离线模式：依赖风险维度未启用
+            离线模式：依赖风险维度未启用
         </div>
         {% endif %}
     </div>
 
     <div class="section">
-        <h2>🗺️ 文件 Treemap</h2>
+        <h2>文件 Treemap</h2>
         <p>面积表示代码行数，颜色表示风险分数（红色=高风险，绿色=低风险）</p>
         <div class="treemap-container" id="treemap"></div>
     </div>
 
     {% if !report.top_risk_files.is_empty() %}
     <div class="section">
-        <h2>🔥 高风险文件 (Top 5%)</h2>
+        <h2>高风险文件 (Top 5%)</h2>
         <table>
             <thead>
                 <tr>
@@ -284,7 +284,7 @@
     {% endif %}
 
     <div class="section">
-        <h2>📁 所有文件详情</h2>
+        <h2>所有文件详情</h2>
         {% if report.files.is_empty() %}
         <div class="no-data">暂无数据</div>
         {% else %}
@@ -398,7 +398,7 @@
 
                             {% if file.consistency.coefficient < 0.7 %}
                             <div class="anomaly">
-                                ⚠️ 数据可信度低<br>
+                                数据可信度低<br>
                                 {% if matches!(file.consistency.history_rewrite, rustburn_core::model::HistoryRewriteState::Detected) %}
                                 - 疑似历史重写<br>
                                 {% endif %}
@@ -420,7 +420,7 @@
 
                             {% if file.raw.parse_incomplete %}
                             <div class="warning">
-                                ⚠️ 语法解析不完整
+                                语法解析不完整
                             </div>
                             {% endif %}
                         </div>
@@ -434,7 +434,7 @@
 
     {% if !report.dependency_findings.is_empty() %}
     <div class="section">
-        <h2>🔒 依赖安全问题</h2>
+        <h2>依赖安全问题</h2>
         <table>
             <thead>
                 <tr>
@@ -471,7 +471,7 @@
 
     {% if !report.anomalies.is_empty() %}
     <div class="section">
-        <h2>⚠️ 异常检测</h2>
+        <h2>异常检测</h2>
         {% for anomaly in report.anomalies %}
         <div class="anomaly">
             疑似异常: {{ anomaly }}
@@ -482,7 +482,7 @@
 
     {% if !report.warnings.is_empty() %}
     <div class="section">
-        <h2>⚠️ 警告信息</h2>
+        <h2>警告信息</h2>
         {% for warning in report.warnings %}
         <div class="warning">{{ warning }}</div>
         {% endfor %}
@@ -490,7 +490,7 @@
     {% endif %}
 
     <div class="section">
-        <h2>ℹ️ 分析元数据</h2>
+        <h2>分析元数据</h2>
         <div class="metadata">
             <div class="metadata-item">
                 <div class="metadata-label">最大提交数</div>

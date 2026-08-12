@@ -200,21 +200,21 @@ fn run_scan() -> Result<(f64, OutputFormat, String), String> {
                 return Err(format!("不是 git 仓库: {}", path));
             }
 
-            eprintln!("🔥 Rustburn v{}", env!("CARGO_PKG_VERSION"));
+            eprintln!("Rustburn v{}", env!("CARGO_PKG_VERSION"));
             eprintln!("正在分析仓库: {}", path);
 
             // Phase 1: Git 历史分析
-            eprintln!("📊 分析 Git 历史...");
+            eprintln!("分析 Git 历史...");
             let (git_metrics, history_truncated, history_rewrite) =
                 analyze_git_history(repo_path, max_commits).map_err(|e| e.to_string())?;
 
             // Phase 2: 扫描文件并分析复杂度
-            eprintln!("📁 扫描文件...");
+            eprintln!("扫描文件...");
             let scanned_files = scan_files(repo_path, &ignore).map_err(|e| e.to_string())?;
             eprintln!("  找到 {} 个源码文件", scanned_files.len());
 
             // Phase 3: 依赖分析
-            eprintln!("🔒 分析依赖...");
+            eprintln!("分析依赖...");
             let dep_analysis =
                 analyze_dependencies(repo_path, offline).map_err(|e| e.to_string())?;
             let mut findings = dep_analysis.findings;
@@ -283,7 +283,7 @@ fn run_scan() -> Result<(f64, OutputFormat, String), String> {
             }
 
             // Phase 4: 评分
-            eprintln!("📈 计算评分...");
+            eprintln!("计算评分...");
 
             // 计算全局最大值用于归一化
             let max_commit_count = file_metrics_list
@@ -394,12 +394,12 @@ fn run_scan() -> Result<(f64, OutputFormat, String), String> {
             // 输出
             match output_format {
                 OutputFormat::Html => {
-                    eprintln!("📝 生成报告...");
+                    eprintln!("生成报告...");
                     let output_path = Path::new(&output);
                     write_report(&report, output_path).map_err(|e| e.to_string())?;
 
                     eprintln!();
-                    eprintln!("✅ 分析完成！");
+                    eprintln!("分析完成！");
                     eprintln!("  仓库总热度分数: {:.2}", repo_total);
                     eprintln!("  分析文件数: {}", scanned_files.len());
                     eprintln!("  耗时: {:.2} 秒", elapsed);
@@ -438,16 +438,16 @@ fn main() {
         Err(e) => {
             // 判断是否为阈值超过
             if e.contains("超过阈值") {
-                eprintln!("❌ {}", e);
+                eprintln!("{}", e);
                 process::exit(1);
             } else if e.contains("不存在") || e.contains("不是 git 仓库") {
-                eprintln!("❌ {}", e);
+                eprintln!("{}", e);
                 process::exit(3);
             } else if e.contains("不支持的输出格式") {
-                eprintln!("❌ {}", e);
+                eprintln!("{}", e);
                 process::exit(2);
             } else {
-                eprintln!("❌ {}", e);
+                eprintln!("{}", e);
                 process::exit(4);
             }
         }
