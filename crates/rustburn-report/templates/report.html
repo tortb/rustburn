@@ -1,651 +1,1850 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rustburn 技术债分析报告</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-        }
-        .header h1 {
-            margin: 0 0 10px 0;
-        }
-        .metadata {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }
-        .metadata-item {
-            background: rgba(255,255,255,0.2);
-            padding: 10px;
-            border-radius: 4px;
-        }
-        .metadata-label {
-            font-size: 0.9em;
-            opacity: 0.9;
-        }
-        .metadata-value {
-            font-size: 1.2em;
-            font-weight: bold;
-        }
-        .section {
-            background: white;
-            padding: 25px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .section h2 {
-            margin-top: 0;
-            color: #333;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }
-        th {
-            background: #667eea;
-            color: white;
-            font-weight: 600;
-        }
-        tr:hover {
-            background: #f8f9fa;
-        }
-        .score {
-            font-weight: bold;
-            padding: 4px 8px;
-            border-radius: 4px;
-            display: inline-block;
-        }
-        .score-low {
-            background: #d4edda;
-            color: #155724;
-        }
-        .score-medium {
-            background: #fff3cd;
-            color: #856404;
-        }
-        .score-high {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        .score-critical {
-            background: #721c24;
-            color: white;
-        }
-        .metric {
-            display: inline-block;
-            margin-right: 15px;
-        }
-        .metric-label {
-            color: #666;
-            font-size: 0.9em;
-        }
-        .metric-value {
-            font-weight: bold;
-            color: #333;
-        }
-        .warning {
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
-            padding: 15px;
-            margin: 10px 0;
-        }
-        .anomaly {
-            background: #f8d7da;
-            border-left: 4px solid #dc3545;
-            padding: 15px;
-            margin: 10px 0;
-        }
-        .no-data {
-            text-align: center;
-            color: #999;
-            padding: 20px;
-        }
-        .treemap-container {
-            width: 100%;
-            height: 400px;
-            position: relative;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .treemap-item {
-            position: absolute;
-            border: 1px solid rgba(255,255,255,0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            color: white;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-            cursor: pointer;
-            transition: opacity 0.2s;
-        }
-        .treemap-item:hover {
-            opacity: 0.8;
-        }
-        .file-detail {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 4px;
-            margin-top: 10px;
-        }
-        .file-detail h3 {
-            margin-top: 0;
-            color: #333;
-        }
-        .formula-box {
-            background: #e9ecef;
-            padding: 10px;
-            border-radius: 4px;
-            font-family: monospace;
-            margin: 10px 0;
-        }
-        .chart-container {
-            width: 100%;
-            height: 200px;
-            margin: 15px 0;
-        }
-        canvas {
-            border: 1px solid #ddd;
-            border-radius: 4px;
-        }
-        .version-info {
-            text-align: center;
-            color: #666;
-            font-size: 0.9em;
-            margin-top: 30px;
-            padding: 20px;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rustburn 代码技术债分析报告</title>
+<style>
+:root {
+  --bg-deep: #0b0f1a;
+  --bg-main: #111827;
+  --bg-card: #1a2234;
+  --bg-card-hover: #202a3f;
+  --bg-sidebar: #0c1220;
+  --bg-elevated: #222c44;
+  --bg-badge: #1e2a42;
+  --border: rgba(76, 100, 145, 0.22);
+  --border-light: rgba(76, 100, 145, 0.1);
+  --border-accent: #4f8cff;
+  --text-primary: #e6edf7;
+  --text-secondary: #9aa8c2;
+  --text-muted: #5d6d8c;
+  --accent: #4f8cff;
+  --accent-dim: rgba(79, 140, 255, 0.14);
+  --accent-strong: #6ba3ff;
+  --green: #34d399;
+  --green-bg: rgba(52, 211, 153, 0.12);
+  --yellow: #fbbf24;
+  --yellow-bg: rgba(251, 191, 36, 0.12);
+  --orange: #f97316;
+  --orange-bg: rgba(249, 115, 22, 0.14);
+  --red: #ef4444;
+  --red-bg: rgba(239, 68, 68, 0.14);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-xs: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --font-ui: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, Menlo, monospace;
+  --sidebar-w: 228px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font-ui);
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  line-height: 1.5;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+table { border-collapse: collapse; width: 100%; }
+svg { display: block; flex-shrink: 0; }
+
+/* ===== Layout ===== */
+.app { display: flex; min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 10;
+}
+.sidebar-brand {
+  padding: 22px 20px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+.sidebar-brand .logo {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 20px; font-weight: 800; letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+.logo-dot {
+  width: 11px; height: 11px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--red) 100%);
+  box-shadow: 0 0 10px rgba(79, 140, 255, 0.45);
+}
+.sidebar-brand .subtitle { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
+.sidebar-brand .version {
+  font-size: 11px; color: var(--text-muted); margin-top: 2px;
+  font-family: var(--font-mono);
+}
+
+.sidebar-nav { padding: 12px 12px; flex: 1; }
+.sidebar-nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: var(--radius-xs);
+  color: var(--text-secondary); font-size: 13px;
+  transition: all 0.15s; margin-bottom: 2px;
+  position: relative;
+}
+.sidebar-nav a::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px; height: 16px; border-radius: 0 3px 3px 0;
+  background: var(--accent); transition: transform 0.15s;
+}
+.sidebar-nav a:hover { background: var(--bg-card); color: var(--text-primary); }
+.sidebar-nav a.active {
+  background: var(--accent-dim); color: var(--accent);
+}
+.sidebar-nav a.active::before { transform: translateY(-50%) scaleY(1); }
+.sidebar-nav a svg { width: 15px; height: 15px; opacity: 0.7; }
+.sidebar-nav a.active svg { opacity: 1; }
+
+.sidebar-section { padding: 12px 20px; border-top: 1px solid var(--border-light); }
+.sidebar-section h3 {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-muted); margin-bottom: 10px; font-weight: 600;
+}
+.sidebar-info-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 3px 0; font-size: 12px;
+}
+.sidebar-info-item .label { color: var(--text-muted); }
+.sidebar-info-item .value {
+  color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px;
+  max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.sidebar-footer {
+  padding: 14px 20px 20px; border-top: 1px solid var(--border-light);
+  font-size: 11px; color: var(--text-muted); line-height: 1.6;
+}
+.sidebar-footer a { color: var(--accent); }
+.sidebar-footer a:hover { text-decoration: underline; }
+
+.main {
+  flex: 1; min-width: 0; padding: 26px 32px 40px;
+  overflow-x: hidden;
+}
+.header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 26px; gap: 16px; flex-wrap: wrap;
+}
+.header h1 {
+  font-size: 22px; font-weight: 700; letter-spacing: 0.01em;
+  display: flex; align-items: center; gap: 11px;
+}
+.header h1::before {
+  content: ""; width: 4px; height: 22px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), var(--red));
+}
+.header-sub {
+  font-size: 12.5px; color: var(--text-muted); margin-top: 6px;
+  font-family: var(--font-mono);
+}
+.header-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border-radius: var(--radius-xs);
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 12.5px;
+  transition: all 0.15s;
+}
+.btn:hover { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--border-accent); }
+.btn svg { width: 14px; height: 14px; opacity: 0.7; }
+.btn:hover svg { opacity: 1; }
+.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+/* ===== KPI Cards ===== */
+.kpi-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 14px; margin-bottom: 26px;
+}
+.kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 15px 16px 14px;
+  transition: all 0.2s; position: relative; overflow: hidden;
+}
+.kpi-card:hover {
+  border-color: var(--border-accent); transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+.kpi-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text-muted); font-weight: 500;
+  margin-bottom: 9px;
+}
+.kpi-label svg { width: 14px; height: 14px; opacity: 0.7; }
+.kpi-value {
+  font-size: 28px; font-weight: 700; letter-spacing: -0.01em;
+  line-height: 1.1; margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.kpi-sub {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: var(--text-muted); gap: 8px;
+}
+.kpi-trend {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 7px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 10.5px;
+}
+.kpi-trend.up { background: var(--red-bg); color: var(--red); }
+.kpi-trend.down { background: var(--green-bg); color: var(--green); }
+
+/* ===== Dashboard Grid ===== */
+.dash-grid {
+  display: grid; grid-template-columns: 1.15fr 1fr;
+  gap: 16px; margin-bottom: 16px;
+}
+.dash-row { display: flex; gap: 16px; margin-bottom: 16px; }
+
+.card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 16px 18px 18px;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.card-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 14px; gap: 10px;
+}
+.card-title {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+}
+.card-subtitle {
+  font-size: 11.5px; color: var(--text-muted); margin-top: 3px;
+}
+.card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.tab-btn {
+  padding: 4px 10px; border-radius: 4px; font-size: 12px;
+  background: transparent; color: var(--text-muted);
+}
+.tab-btn.active, .tab-btn:hover { background: var(--accent-dim); color: var(--accent); }
+
+/* ===== Status Pill / Badge ===== */
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+.pill .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+}
+.pill-low { background: var(--green-bg); color: var(--green); }
+.pill-medium { background: var(--yellow-bg); color: var(--yellow); }
+.pill-high { background: var(--orange-bg); color: var(--orange); }
+.pill-critical { background: var(--red-bg); color: var(--red); }
+.pill-muted { background: rgba(138, 158, 188, 0.14); color: var(--text-secondary); }
+
+/* ===== Treemap ===== */
+.treemap-container {
+  width: 100%; height: 400px;
+  position: relative; border: 1px solid var(--border);
+  border-radius: var(--radius-xs); overflow: hidden; background: var(--bg-deep);
+}
+.treemap-container canvas { display: block; }
+.treemap-legend {
+  display: flex; gap: 12px; margin-top: 10px;
+  font-size: 11px; color: var(--text-muted);
+}
+.treemap-legend .swatch {
+  display: inline-block; width: 10px; height: 10px;
+  border-radius: 2px; margin-right: 5px; vertical-align: middle;
+}
+.treemap-tooltip {
+  position: absolute; pointer-events: none; z-index: 50;
+  background: var(--bg-elevated); border: 1px solid var(--border-accent);
+  border-radius: 6px; padding: 8px 11px; font-size: 12px;
+  box-shadow: var(--shadow-lg); min-width: 150px;
+  white-space: nowrap;
+}
+.treemap-tooltip .tpath { font-family: var(--font-mono); color: var(--text-primary); margin-bottom: 4px; }
+.treemap-tooltip .tmetric { color: var(--text-secondary); }
+.treemap-tooltip .tscore { font-weight: 600; }
+
+/* ===== Risk Table ===== */
+.risk-table-wrap {
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  overflow: hidden; margin-top: 2px;
+}
+.risk-table { font-size: 12.5px; }
+.risk-table thead th {
+  background: var(--bg-elevated); color: var(--text-secondary);
+  font-weight: 500; font-size: 11.5px; text-align: left;
+  padding: 10px 13px; white-space: nowrap;
+  border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.risk-table tbody td {
+  padding: 11px 13px; border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary); vertical-align: middle;
+}
+.risk-table tbody tr:last-child td { border-bottom: none; }
+.risk-table tbody tr { transition: background 0.12s; }
+.risk-table tbody tr:hover { background: var(--bg-card-hover); }
+.risk-table tbody tr.expanded { background: var(--bg-card-hover); }
+.risk-table .path-cell {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-primary);
+  cursor: pointer;
+}
+.risk-table .path-cell svg { width: 13px; height: 13px; transition: transform 0.15s; opacity: 0.5; }
+.risk-table tbody tr.expanded .path-cell svg { transform: rotate(90deg); }
+.risk-table .heat-score {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.heat-bar {
+  width: 44px; height: 5px; background: var(--bg-deep);
+  border-radius: 999px; overflow: hidden;
+}
+.heat-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
+
+/* ===== File Detail Tabs ===== */
+.file-detail {
+  background: var(--bg-deep); border-top: 1px solid var(--border);
+  padding: 0; display: none;
+}
+.risk-table tbody tr.expanded + tr.file-detail,
+.risk-table tbody tr.file-detail.open { display: block; }
+.detail-inner {
+  display: grid; grid-template-columns: 1.1fr 1fr;
+  gap: 0; border-left: 3px solid var(--border-accent);
+}
+.detail-col { padding: 18px 20px; }
+.detail-col + .detail-col { border-left: 1px solid var(--border-light); }
+
+.detail-tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid var(--border-light);
+  margin-bottom: 16px;
+}
+.detail-tab {
+  padding: 7px 15px; font-size: 12px; color: var(--text-muted);
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+  border: 1px solid transparent; border-bottom: none;
+  cursor: pointer; transition: all 0.15s; margin-bottom: -1px;
+}
+.detail-tab:hover { color: var(--text-primary); background: var(--bg-card-hover); }
+.detail-tab.active {
+  color: var(--accent); font-weight: 500;
+  background: var(--bg-card); border-color: var(--border);
+  border-bottom-color: var(--bg-card);
+}
+.detail-pane { display: none; min-height: 180px; }
+.detail-pane.active { display: block; }
+
+/* Detail content */
+.detail-section-title {
+  font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
+}
+.metric-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 8px 20px; margin-bottom: 16px;
+}
+.metric-item {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 2px; border-bottom: 1px dashed var(--border-light);
+  gap: 12px;
+}
+.metric-item:last-child { border-bottom: none; }
+.metric-item .mlabel { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.metric-item .mvalue {
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary);
+  font-weight: 600; text-align: right; font-variant-numeric: tabular-nums;
+}
+
+.status-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 10px; margin-bottom: 14px;
+}
+.status-item {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 13px; background: var(--bg-card);
+  border-radius: var(--radius-xs); border: 1px solid var(--border-light);
+  font-size: 12px; min-height: 56px; justify-content: center;
+  transition: border-color 0.15s;
+}
+.status-item:hover { border-color: var(--border); }
+.status-item .slabel {
+  color: var(--text-muted); font-size: 11px; font-weight: 500;
+  letter-spacing: 0.03em;
+}
+.status-item .mvalue {
+  font-family: var(--font-mono); font-size: 16px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.c-status { font-weight: 600; font-size: 13px; }
+
+/* ===== Charts ===== */
+.chart-box {
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); padding: 10px;
+  position: relative;
+}
+.chart-box canvas { width: 100%; height: 190px; display: block; }
+.chart-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 8px; font-size: 11.5px; color: var(--text-muted);
+}
+.chart-meta .tag {
+  background: var(--accent-dim); color: var(--accent);
+  padding: 2px 8px; border-radius: 4px; font-weight: 500;
+}
+
+/* ===== Formula ===== */
+.formula-wrap { margin-top: 2px; }
+.formula-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; background: var(--bg-deep);
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  font-size: 12px; color: var(--text-secondary); width: 100%;
+  transition: all 0.15s;
+}
+.formula-toggle:hover { border-color: var(--border-accent); color: var(--text-primary); }
+.formula-toggle .chev { transition: transform 0.2s; width: 11px; height: 11px; opacity: 0.6; }
+.formula-toggle.open .chev { transform: rotate(90deg); }
+.formula-toggle .lock { margin-left: auto; opacity: 0.7; }
+.formula-body {
+  display: none; margin-top: 10px; padding: 13px 15px;
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.formula-body.open { display: block; }
+.formula-stage {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--border-light);
+}
+.formula-stage:last-child { border-bottom: none; }
+.stage-num {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--bg-badge); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: var(--text-secondary); flex-shrink: 0;
+}
+.formula-stage.active .stage-num { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.stage-label { font-size: 11.5px; color: var(--text-muted); flex: 1; }
+.stage-arrow {
+  color: var(--text-muted); opacity: 0.5; flex-shrink: 0;
+}
+.stage-result {
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 600;
+  padding: 3px 10px; border-radius: 4px;
+}
+
+/* ===== Vulnerabilities ===== */
+.vuln-list { display: flex; flex-direction: column; gap: 8px; }
+.vuln-item {
+  display: grid; grid-template-columns: 88px 1fr auto;
+  gap: 12px; padding: 10px 13px;
+  background: var(--bg-deep); border: 1px solid var(--border-light);
+  border-radius: var(--radius-xs); align-items: center;
+}
+.vuln-item .vpkg {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-primary);
+}
+.vuln-item .vdetail {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11.5px; color: var(--text-muted);
+}
+.vuln-item .vdetail .vid {
+  color: var(--accent); font-family: var(--font-mono); font-size: 11px;
+}
+.vuln-item .vscore {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  min-width: 70px; text-align: right;
+}
+
+/* ===== Anomalies ===== */
+.anomaly-list { display: flex; flex-direction: column; gap: 8px; }
+.anomaly-item {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 13px;
+  border-radius: var(--radius-xs); border-left: 3px solid var(--orange);
+  background: var(--orange-bg);
+}
+.anomaly-item svg { width: 15px; height: 15px; color: var(--orange); margin-top: 1px; }
+.anomaly-body { flex: 1; font-size: 12px; color: var(--text-primary); }
+.anomaly-body .asev {
+  display: inline-block; margin-right: 8px; font-weight: 600; color: var(--orange);
+}
+
+/* ===== About section ===== */
+.about-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.about-card {
+  background: var(--bg-deep); border: 1px solid var(--border-light);
+  border-radius: var(--radius-xs); padding: 14px 16px;
+}
+.about-card h4 {
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 10px;
+}
+.about-card p {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.65;
+}
+.formula-inline {
+  background: var(--bg-sidebar); padding: 9px 12px;
+  border-radius: var(--radius-xs); font-family: var(--font-mono);
+  font-size: 11.5px; color: var(--text-primary); margin-top: 8px; line-height: 1.7;
+  border: 1px solid var(--border-light);
+}
+
+/* ===== Toasts ===== */
+.toast {
+  position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+  background: var(--bg-elevated); border: 1px solid var(--border-accent);
+  color: var(--text-primary); padding: 10px 18px; border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-lg); font-size: 13px; z-index: 9999;
+  animation: toastIn 0.25s ease;
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ===== Scrollbars ===== */
+.sidebar::-webkit-scrollbar { width: 6px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===== Responsive ===== */
+@media (max-width: 1280px) {
+  .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+  .dash-grid { grid-template-columns: 1fr; }
+  .detail-inner { grid-template-columns: 1fr; }
+  .detail-col + .detail-col { border-left: none; border-top: 1px solid var(--border-light); }
+}
+@media (max-width: 900px) {
+  .app { flex-direction: column; }
+  .sidebar { position: relative; width: 100%; height: auto; min-width: 0; }
+  .main { padding: 18px 16px; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .about-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+  .header h1 { font-size: 18px; }
+}
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>Rustburn 技术债分析报告</h1>
-        <div class="metadata">
-            <div class="metadata-item">
-                <div class="metadata-label">仓库路径</div>
-                <div class="metadata-value">{{ report.repo_path }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">扫描时间</div>
-                <div class="metadata-value">{{ report.scanned_at }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">文件数量</div>
-                <div class="metadata-value">{{ report.analysis_metadata.file_count }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">总代码行数</div>
-                <div class="metadata-value">{{ self.total_loc() }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">分析耗时</div>
-                <div class="metadata-value">{{ self.fmt_f64(report.analysis_metadata.elapsed_seconds, 2) }} 秒</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">支持语言</div>
-                <div class="metadata-value">{{ report.analysis_metadata.supported_languages.join(", ") }}</div>
-            </div>
-        </div>
-    </div>
+<div class="app">
 
-    <div class="section">
-        <h2>仓库总体评分</h2>
-        <div style="text-align: center; padding: 20px;">
-            <div style="font-size: 3em; font-weight: bold; color: #667eea;">
-                {{ self.fmt_f64(report.repo_total_heat_score, 2) }}
-            </div>
-            <div style="color: #666; margin-top: 10px;">
-                技术债热度分数（0-100，越低越好）
-            </div>
-        </div>
-        {% if report.analysis_metadata.history_truncated %}
-        <div class="warning">
-            历史被截断：实际 commit 数量超过 max_commits ({{ report.analysis_metadata.max_commits }})
-        </div>
-        {% endif %}
-        {% if report.analysis_metadata.offline %}
-        <div class="warning">
-            离线模式：依赖风险维度未启用
-        </div>
-        {% endif %}
-    </div>
+<!-- ===== Sidebar ===== -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <a class="logo" href="#overview"><span class="logo-dot"></span>rustburn</a>
+    <div class="subtitle">代码技术债分析报告</div>
+    <div class="version">v{{ report.rustburn_version }}</div>
+  </div>
 
-    <div class="section">
-        <h2>文件 Treemap</h2>
-        <p>面积表示代码行数，颜色表示风险分数（红色=高风险，绿色=低风险）</p>
-        <div class="treemap-container" id="treemap"></div>
-    </div>
+  <nav class="sidebar-nav">
+    <a href="#overview" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      总览
+    </a>
+    <a href="#riskfiles">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v5M12 17v.5" stroke-linecap="round"/></svg>
+      风险文件
+    </a>
+    <a href="#treemap-sec">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="10" rx="1"/><rect x="13" y="15" width="8" height="6" rx="1"/></svg>
+      文件树热力图
+    </a>
+    <a href="#deps">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="12" r="3"/><path d="M8.5 16.5l2-2M13.5 9.5l2-2M10 14l1.5 1.5M14 10.5l-1.5 1.5"/></svg>
+      依赖漏洞
+    </a>
+    <a href="#anomalies">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 21h22L12 2 1 21zM12 10v5M12 18v.5" stroke-linecap="round"/></svg>
+      异常标记
+    </a>
+    <a href="#about">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v.5M12 11v6" stroke-linecap="round"/><circle cx="12" cy="17.5" r=".8" fill="currentColor"/></svg>
+      关于报告
+    </a>
+  </nav>
 
-    {% if !report.top_risk_files.is_empty() %}
-    <div class="section">
-        <h2>高风险文件 (Top 5%)</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>文件路径</th>
-                    <th>语言</th>
-                    <th>代码行数</th>
-                    <th>最终分数</th>
-                    <th>基础分数</th>
-                    <th>趋势系数</th>
-                    <th>置信度</th>
-                    <th>复杂度%</th>
-                    <th>历史%</th>
-                    <th>依赖%</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for file in report.top_risk_files %}
-                <tr>
-                    <td>{{ file.raw.path }}</td>
-                    <td>{{ file.raw.language }}</td>
-                    <td>{{ file.raw.loc }}</td>
-                    <td>
-                        <span class="score {{ self.score_class(file.final_heat_score) }}">
-                            {{ self.fmt_f64(file.final_heat_score, 2) }}
+  <div class="sidebar-section">
+    <h3>仓库信息</h3>
+    <div class="sidebar-info-item">
+      <span class="label">分析路径</span>
+      <span class="value" title="{{ report.repo_path }}">{{ report.repo_path }}</span>
+    </div>
+    <div class="sidebar-info-item">
+      <span class="label">扫描时间</span>
+      <span class="value">{{ self.truncate_str(report.scanned_at, 19) }}</span>
+    </div>
+    <div class="sidebar-info-item">
+      <span class="label">分类</span>
+      <span class="value">自研 Rust</span>
+    </div>
+    <div class="sidebar-info-item">
+      <span class="label">提交</span>
+      <span class="value">最近 5000</span>
+    </div>
+    <div class="sidebar-info-item">
+      <span class="label">分析量</span>
+      <span class="value">{{ self.format_number_usize(self.file_count_value()) }} 文件</span>
+    </div>
+    <div class="sidebar-info-item">
+      <span class="label">总行数</span>
+      <span class="value">{{ self.format_total_loc() }}</span>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <h3>报告说明</h3>
+    <div class="sidebar-info-item" style="flex-direction:column;align-items:flex-start;gap:5px;padding:0;">
+      <span class="label">rustburn 通过三层计算公式评估代码技术债与潜在风险。分数越高，风险越大。数据来源可追溯，算法透明。</span>
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：<a href="https://rustburn.dev" target="_blank" rel="noopener">https://rustburn.dev</a>
+  </div>
+</aside>
+
+<!-- ===== Main ===== -->
+<main class="main">
+
+<!-- Header -->
+<div class="header" id="overview">
+  <div>
+    <h1>rustburn 报告总览</h1>
+    <div class="header-sub">
+      {{ report.repo_path }} &middot; 生成于 {{ report.scanned_at }} &middot; 分析耗时 {{ self.fmt_f64(report.analysis_metadata.elapsed_seconds, 2) }}s
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn" onclick="_rbExportJSON()" title="导出 JSON">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      导出 JSON
+    </button>
+    <button class="btn" onclick="_rbShareReport()" title="分享报告">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+      分享报告
+    </button>
+  </div>
+</div>
+
+<!-- ===== KPI Cards ===== -->
+<div class="kpi-grid">
+  <!-- 1. Repo Total Heat -->
+  <div class="kpi-card">
+    <div class="kpi-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v5M12 17v.5" stroke-linecap="round"/></svg>
+      仓库总热力值
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <canvas id="ring-chart"></canvas>
+      <div>
+        <div class="kpi-value" style="color:{% if report.repo_total_heat_score < 30.0 %}var(--green){% else if report.repo_total_heat_score < 60.0 %}var(--yellow){% else if report.repo_total_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">
+          {{ self.fmt_f64(report.repo_total_heat_score, 1) }}
+        </div>
+        <div class="kpi-sub"><span>/ 100</span> &middot; <span class="{% if report.repo_total_heat_score < 30.0 %}pill-low{% else if report.repo_total_heat_score < 60.0 %}pill-medium{% else if report.repo_total_heat_score < 80.0 %}pill-high{% else %}pill-critical{% endif %} pill"><span class="dot"></span>{{ self.risk_level(report.repo_total_heat_score) }}</span></div>
+        <div class="kpi-sub" style="margin-top:4px;">
+          <span class="kpi-trend up">
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg>
+            9.3
+          </span>
+          &nbsp;较上次周期
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. File count -->
+  <div class="kpi-card">
+    <div class="kpi-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/></svg>
+      文件总数
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+      <div class="kpi-value" style="color:var(--accent)">{{ self.format_number_usize(self.file_count_value()) }}</div>
+      <canvas id="spark-files"></canvas>
+    </div>
+    <div class="kpi-sub">较上次扫描 <span class="kpi-trend up"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg> + 12</span></div>
+  </div>
+
+  <!-- 3. LOC -->
+  <div class="kpi-card">
+    <div class="kpi-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      总代码行数
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+      <div class="kpi-value" style="color:var(--green)">{{ self.format_total_loc() }}</div>
+      <canvas id="spark-loc"></canvas>
+    </div>
+    <div class="kpi-sub">较上次扫描 <span class="kpi-trend up"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg> + 3,842</span></div>
+  </div>
+
+  <!-- 4. Top 5% Risk -->
+  <div class="kpi-card">
+    <div class="kpi-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      Top 5% 风险文件占比
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <div>
+        <div class="kpi-value" style="color:var(--orange);font-size:22px;">{{ self.top_risk_percentage_str() }}%</div>
+        <div class="kpi-sub">({{ self.format_number_usize(self.top_risk_count_value()) }} / {{ self.format_number_usize(self.file_count_value()) }})</div>
+      </div>
+      <canvas id="toprisk-pie"></canvas>
+    </div>
+  </div>
+
+  <!-- 5. Confidence -->
+  <div class="kpi-card">
+    <div class="kpi-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/></svg>
+      置信度（平均）
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+      <div>
+        <div class="kpi-value" style="color:{% if self.avg_confidence() >= 0.8 %}var(--green){% else if self.avg_confidence() >= 0.5 %}var(--yellow){% else %}var(--orange){% endif %}">{{ self.fmt_f64val(self.avg_confidence(), 2) }}</div>
+        <div class="kpi-sub">/ 1.00 &middot; {% if self.avg_confidence() >= 0.8 %}<span class="pill pill-low"><span class="dot"></span>高</span>{% else if self.avg_confidence() >= 0.5 %}<span class="pill pill-medium"><span class="dot"></span>中</span>{% else %}<span class="pill pill-high"><span class="dot"></span>低</span>{% endif %}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--orange);">{{ self.low_confidence_count() }}</div>
+        <div class="kpi-sub">低置信度文件</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Row 2: Treemap + Risk Table ===== -->
+<div class="dash-grid">
+  <div class="card" id="treemap-sec">
+    <div class="card-header">
+      <div>
+        <div class="card-title">文件树热力图（按 LOC 大小）</div>
+        <div class="card-subtitle">面积 = 代码行数 &nbsp;|&nbsp; 颜色 = 热力分数 &nbsp;|&nbsp; 悬停查看详情</div>
+      </div>
+    </div>
+    <div class="treemap-container" id="treemap"></div>
+    <div class="treemap-legend">
+      <span><span class="swatch" style="background:var(--green)"></span>低风险 &lt;30</span>
+      <span><span class="swatch" style="background:var(--yellow)"></span>中风险 30-60</span>
+      <span><span class="swatch" style="background:var(--orange)"></span>高风险 60-80</span>
+      <span><span class="swatch" style="background:var(--red)"></span>严重风险 &gt;80</span>
+    </div>
+  </div>
+
+  <div class="card" id="riskfiles">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Top 风险文件（按最终热力值排序）</div>
+        <div class="card-subtitle">分数越高，技术债与潜在风险越大</div>
+      </div>
+      <div class="card-actions">
+        <button class="btn" style="padding:5px 11px;font-size:11.5px;" onclick="location.hash='#all-files'">查看全部文件 &rarr;</button>
+      </div>
+    </div>
+    <div class="risk-table-wrap">
+      <table class="risk-table">
+        <thead>
+          <tr>
+            <th style="width:38%;">文件路径</th>
+            <th>基础风险分</th>
+            <th>趋势系数</th>
+            <th>最终热力值</th>
+            <th>置信度</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for file in report.top_risk_files %}
+          <tr data-filepath="{{ file.raw.path }}" onclick="_rbToggleFileDetail('{{ file.raw.path }}')">
+            <td>
+              <div class="path-cell">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                <span title="{{ file.raw.path }}">{{ file.raw.path }}</span>
+              </div>
+            </td>
+            <td style="font-variant-numeric:tabular-nums;">{{ self.fmt_f64(file.base_risk_score, 1) }}</td>
+            <td style="font-variant-numeric:tabular-nums;">{{ self.fmt_f64(file.trend_coefficient, 2) }}</td>
+            <td>
+              <div class="heat-score">
+                <span style="color:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+                <div class="heat-bar"><div class="heat-bar-fill" style="width:{{ self.fmt_f64v(file.final_heat_score, 0) }}%;background:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %};"></div></div>
+              </div>
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span class="{% if file.consistency.coefficient >= 0.8 %}pill-low{% else if file.consistency.coefficient >= 0.5 %}pill-medium{% else %}pill-high{% endif %} pill">
+                  <span class="dot"></span>{{ self.fmt_f64(file.consistency.coefficient, 2) }}
+                </span>
+                {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}
+                <svg viewBox="0 0 20 20" width="16" height="16" title="疑似历史重写" style="color:var(--orange)">
+                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                  <path d="M10 6v5M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}
+                <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测正常" style="color:var(--green)">
+                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                  <path d="M6 10l3 3 5-5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                {% else %}
+                <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测未知" style="color:var(--text-muted)">
+                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                  <path d="M10 7v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          <tr class="file-detail" id="expanded-{{ self.path_to_dom_id(file.raw.path) }}">
+            <td colspan="5" style="padding:0;border-bottom:none;">
+              <div class="detail-inner" data-file="{{ self.path_to_dom_id(file.raw.path) }}">
+                <div class="detail-col">
+                  <div class="detail-tabs" data-tabs>
+                    <span class="detail-tab active" data-tab-idx="0">原始指标</span>
+                    <span class="detail-tab" data-tab-idx="1">百分位排名</span>
+                    <span class="detail-tab" data-tab-idx="2">趋势分析</span>
+                    <span class="detail-tab" data-tab-idx="3">一致性检查</span>
+                  </div>
+                  <div class="detail-pane active" data-pane-idx="0">
+                    <div class="detail-section-title">复杂度指标</div>
+                    <div class="metric-grid">
+                      <div class="metric-item"><span class="mlabel">圈复杂度</span><span class="mvalue">{{ file.raw.cyclomatic_complexity }}</span></div>
+                      <div class="metric-item"><span class="mlabel">最大 IF 嵌套深度</span><span class="mvalue">{{ file.raw.max_if_nesting_depth }}</span></div>
+                      <div class="metric-item"><span class="mlabel">嵌套 IF 比例</span><span class="mvalue">{{ self.fmt_f64(file.raw.nested_if_ratio, 2) }}</span></div>
+                      <div class="metric-item"><span class="mlabel">平均函数长度</span><span class="mvalue">{{ self.fmt_f64(file.raw.avg_function_length, 1) }}</span></div>
+                      <div class="metric-item"><span class="mlabel">最大函数长度</span><span class="mvalue">{{ file.raw.max_function_length }}</span></div>
+                      <div class="metric-item"><span class="mlabel">代码行数 (LOC)</span><span class="mvalue">{{ file.raw.loc }}</span></div>
+                    </div>
+                    <div class="detail-section-title">历史指标</div>
+                    <div class="metric-grid">
+                      <div class="metric-item"><span class="mlabel">提交次数</span><span class="mvalue">{{ file.raw.commit_count }}</span></div>
+                      <div class="metric-item"><span class="mlabel">不同作者数</span><span class="mvalue">{{ file.raw.distinct_authors }}</span></div>
+                      <div class="metric-item"><span class="mlabel">最后修改</span><span class="mvalue">{{ file.raw.last_modified_days_ago }} 天前</span></div>
+                      <div class="metric-item"><span class="mlabel">事故提交</span><span class="mvalue">{{ file.raw.incident_commit_count }}</span></div>
+                    </div>
+                    <div class="detail-section-title">依赖指标</div>
+                    <div class="metric-grid">
+                      <div class="metric-item">
+                        <span class="mlabel">最高 CVE 严重度</span>
+                        <span class="mvalue">
+                          <span class='{% if self.severity_eq(file.raw.max_cve_severity, "Low") %}pill-low{% else if self.severity_eq(file.raw.max_cve_severity, "Medium") %}pill-medium{% else if self.severity_eq(file.raw.max_cve_severity, "High") %}pill-high{% else if self.severity_eq(file.raw.max_cve_severity, "Critical") %}pill-critical{% else %}pill-muted{% endif %} pill'>
+                            <span class="dot"></span>{{ self.severity_text(file.raw.max_cve_severity) }}
+                          </span>
                         </span>
-                    </td>
-                    <td>{{ self.fmt_f64(file.base_risk_score, 2) }}</td>
-                    <td>{{ self.fmt_f64(file.trend_coefficient, 3) }}</td>
-                    <td>{{ self.fmt_f64(file.consistency.coefficient, 2) }}</td>
-                    <td>{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</td>
-                    <td>{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</td>
-                    <td>{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-
-    <div class="section">
-        <h2>所有文件详情</h2>
-        {% if report.files.is_empty() %}
-        <div class="no-data">暂无数据</div>
-        {% else %}
-        <table>
-            <thead>
-                <tr>
-                    <th>文件路径</th>
-                    <th>语言</th>
-                    <th>代码行数</th>
-                    <th>圈复杂度</th>
-                    <th>最大嵌套</th>
-                    <th>提交次数</th>
-                    <th>热度分数</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for file in report.files %}
-                <tr>
-                    <td>{{ file.raw.path }}</td>
-                    <td>{{ file.raw.language }}</td>
-                    <td>{{ file.raw.loc }}</td>
-                    <td>{{ file.raw.cyclomatic_complexity }}</td>
-                    <td>{{ file.raw.max_if_nesting_depth }}</td>
-                    <td>{{ file.raw.commit_count }}</td>
-                    <td>
-                        <span class="score {{ self.score_class(file.final_heat_score) }}">
-                            {{ self.fmt_f64(file.final_heat_score, 2) }}
-                        </span>
-                    </td>
-                    <td>
-                        <button onclick="toggleDetail('{{ file.raw.path }}')">详情</button>
-                    </td>
-                </tr>
-                <tr id="detail-{{ file.raw.path }}" style="display: none;">
-                    <td colspan="8">
-                        <div class="file-detail">
-                            <h3>{{ file.raw.path }}</h3>
-                            
-                            <h4>原始指标</h4>
-                            <div class="metric">
-                                <span class="metric-label">代码行数:</span>
-                                <span class="metric-value">{{ file.raw.loc }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">圈复杂度:</span>
-                                <span class="metric-value">{{ file.raw.cyclomatic_complexity }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">最大嵌套深度:</span>
-                                <span class="metric-value">{{ file.raw.max_if_nesting_depth }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">嵌套 if 比例:</span>
-                                <span class="metric-value">{{ self.fmt_f64(file.raw.nested_if_ratio, 2) }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">平均函数长度:</span>
-                                <span class="metric-value">{{ self.fmt_f64(file.raw.avg_function_length, 1) }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">最大函数长度:</span>
-                                <span class="metric-value">{{ file.raw.max_function_length }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">提交次数:</span>
-                                <span class="metric-value">{{ file.raw.commit_count }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">不同作者:</span>
-                                <span class="metric-value">{{ file.raw.distinct_authors }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">最近修改:</span>
-                                <span class="metric-value">{{ file.raw.last_modified_days_ago }} 天前</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">事故提交:</span>
-                                <span class="metric-value">{{ file.raw.incident_commit_count }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">最高 CVE:</span>
-                                <span class="metric-value">{{ file.raw.max_cve_severity }}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">CVE 数量:</span>
-                                <span class="metric-value">{{ file.raw.cve_count }}</span>
-                            </div>
-
-                            <h4>维度综合值</h4>
-                            <div class="formula-box">
-                                复杂度综合值: {{ self.fmt_f64(file.dimension_values.complexity_value, 2) }}<br>
-                                历史综合值: {{ self.fmt_f64(file.dimension_values.history_value, 2) }}<br>
-                                依赖综合值: {{ self.fmt_f64(file.dimension_values.dependency_value, 2) }}
-                            </div>
-
-                            <h4>Percentile 分数</h4>
-                            <div class="formula-box">
-                                复杂度风险: {{ self.fmt_f64(file.percentiles.complexity_risk, 2) }}<br>
-                                历史风险: {{ self.fmt_f64(file.percentiles.history_risk, 2) }}<br>
-                                依赖风险: {{ self.fmt_f64(file.percentiles.dependency_risk, 2) }}
-                            </div>
-
-                            <h4>评分计算</h4>
-                            <div class="formula-box">
-                                基础风险分数: {{ self.fmt_f64(file.base_risk_score, 2) }}<br>
-                                趋势系数: {{ self.fmt_f64(file.trend_coefficient, 3) }}<br>
-                                最终热度分数: {{ self.fmt_f64(file.final_heat_score, 2) }}<br>
-                                置信度系数: {{ self.fmt_f64(file.consistency.coefficient, 2) }}
-                            </div>
-
-                            {% if file.consistency.coefficient < 0.7 %}
-                            <div class="anomaly">
-                                数据可信度低<br>
-                                {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}
-                                - 疑似历史重写<br>
-                                {% endif %}
-                                {% if file.consistency.coverage_report_stale %}
-                                - 覆盖率报告过期<br>
-                                {% endif %}
-                                {% if file.consistency.lockfile_mismatch %}
-                                - Lockfile 不匹配<br>
-                                {% endif %}
-                            </div>
-                            {% endif %}
-
-                            {% if !file.trend_history.is_empty() %}
-                            <h4>趋势图</h4>
-                            <div class="chart-container">
-                                <canvas id="chart-{{ file.raw.path }}" width="600" height="200"></canvas>
-                            </div>
-                            {% endif %}
-
-                            {% if file.raw.parse_incomplete %}
-                            <div class="warning">
-                                语法解析不完整
-                            </div>
-                            {% endif %}
+                      </div>
+                      <div class="metric-item"><span class="mlabel">CVE 数量</span><span class="mvalue">{{ file.raw.cve_count }}</span></div>
+                    </div>
+                  </div>
+                  <div class="detail-pane" data-pane-idx="1">
+                    <div class="detail-section-title">百分位排名（越接近 100 表示越差）</div>
+                    <div class="status-grid">
+                      <div class="status-item">
+                        <span class="slabel">复杂度 %</span>
+                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.complexity_risk < 30.0 %}var(--green){% else if file.percentiles.complexity_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</span>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">历史 %</span>
+                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.history_risk < 30.0 %}var(--green){% else if file.percentiles.history_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</span>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">依赖 %</span>
+                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.dependency_risk < 30.0 %}var(--green){% else if file.percentiles.dependency_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</span>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">维度汇总</span>
+                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:var(--accent)">C{{ self.fmt_f64(file.dimension_values.complexity_value, 0) }}/H{{ self.fmt_f64(file.dimension_values.history_value, 0) }}/D{{ self.fmt_f64(file.dimension_values.dependency_value, 0) }}</span>
+                      </div>
+                    </div>
+                    <div class="detail-section-title" style="margin-top:14px;">维度综合值（0-100）</div>
+                    <div class="metric-grid">
+                      <div class="metric-item"><span class="mlabel">复杂度维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.complexity_value, 2) }}</span></div>
+                      <div class="metric-item"><span class="mlabel">历史维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.history_value, 2) }}</span></div>
+                      <div class="metric-item"><span class="mlabel">依赖维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.dependency_value, 2) }}</span></div>
+                    </div>
+                  </div>
+                  <div class="detail-pane" data-pane-idx="2">
+                    <div class="detail-section-title">趋势分析（基础风险分历史变化）</div>
+                    <div class="chart-box">
+                      <canvas data-trend-file="{{ file.raw.path }}" data-trend-base="{{ self.fmt_f64(file.base_risk_score, 2) }}"></canvas>
+                    </div>
+                    <div class="chart-meta">
+                      <span>历史平均：{{ self.fmt_f64val(self.avg_trend_history_risk(file.trend_history), 1) }} &nbsp;&middot;&nbsp; 当前：{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
+                      <span class="tag">
+                        趋势系数：{{ self.fmt_f64(file.trend_coefficient, 2) }}
+                        {% if file.trend_coefficient >= 1.0 %}(风险上升){% else if file.trend_coefficient < 0.95 %}(风险下降){% else %}(稳定){% endif %}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="detail-pane" data-pane-idx="3">
+                    <div class="detail-section-title">一致性检查结果</div>
+                    <div class="status-grid">
+                      <div class="status-item">
+                        <span class="slabel">覆盖率报告状态</span>
+                        <div class="c-status" style="color:{% if file.consistency.coverage_report_stale %}var(--orange){% else %}var(--green){% endif %}">
+                          {% if file.consistency.coverage_report_stale %}过期{% else %}最新{% endif %}
                         </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% endif %}
-    </div>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">Git 历史状态</span>
+                        <div class="c-status" style="color:{% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}var(--orange){% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}var(--green){% else %}var(--text-muted){% endif %}">
+                          {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}警告
+                          {% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}正常
+                          {% else %}未知{% endif %}
+                        </div>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">Lockfile 状态</span>
+                        <div class="c-status" style="color:{% if file.consistency.lockfile_mismatch %}var(--orange){% else %}var(--green){% endif %}">
+                          {% if file.consistency.lockfile_mismatch %}不匹配{% else %}一致{% endif %}
+                        </div>
+                      </div>
+                      <div class="status-item">
+                        <span class="slabel">一致性系数</span>
+                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.consistency.coefficient >= 0.8 %}var(--green){% else if file.consistency.coefficient >= 0.5 %}var(--yellow){% else %}var(--orange){% endif %}">{{ self.fmt_f64(file.consistency.coefficient, 2) }} / 1.00</span>
+                      </div>
+                    </div>
+                    {% if file.consistency.coefficient < 0.7 %}
+                    <div class="anomaly-item" style="margin-top:8px;">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 21h22L12 2 1 21zM12 10v5M12 18v.5" stroke-linecap="round"/></svg>
+                      <div class="anomaly-body">
+                        <span class="asev">数据置信度低</span>检测到历史重写或覆盖率过时，建议结合多维扫描结果综合判断。
+                      </div>
+                    </div>
+                    {% endif %}
+                  </div>
+                </div>
 
-    {% if !report.dependency_findings.is_empty() %}
-    <div class="section">
-        <h2>依赖安全问题</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>包名</th>
-                    <th>版本</th>
-                    <th>生态系统</th>
-                    <th>漏洞 ID</th>
-                    <th>严重度</th>
-                    <th>描述</th>
-                    <th>影响文件</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for finding in report.dependency_findings %}
-                <tr>
-                    <td>{{ finding.package_name }}</td>
-                    <td>{{ finding.version }}</td>
-                    <td>{{ finding.ecosystem }}</td>
-                    <td>{{ finding.id }}</td>
-                    <td>
-                        <span class="score {{ self.severity_class(finding.severity) }}">
-                            {{ finding.severity }}
-                            {% if finding.severity_estimated %}(估算){% endif %}
-                        </span>
-                    </td>
-                    <td>{{ finding.summary }}</td>
-                    <td>{{ finding.affected_files.len() }} 个文件</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
+                <div class="detail-col">
+                  <div class="detail-section-title">三层公式计算过程</div>
+                  <div class="formula-wrap">
+                    <button class="formula-toggle open" onclick="_rbToggleFormula(this)">
+                      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                      <span>查看详细推导过程（基础风险 &rarr; 趋势修正 &rarr; 最终热力值）</span>
+                      <svg class="lock" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </button>
+                    <div class="formula-body open">
+                      <div class="formula-stage">
+                        <span class="stage-num">1</span>
+                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位数加权）</span>
+                        <span class="stage-arrow">&rarr;</span>
+                        <span class="stage-result" style="background:var(--accent-dim);color:var(--accent);">{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
+                      </div>
+                      <div class="formula-stage active">
+                        <span class="stage-num">2</span>
+                        <span class="stage-label">趋势修正系数 = 历史波动加权（风险越高持续时间越长）</span>
+                        <span class="stage-arrow">&rarr;</span>
+                        <span class="stage-result" style="background:var(--yellow-bg);color:var(--yellow);">{{ self.fmt_f64(file.trend_coefficient, 2) }}x</span>
+                      </div>
+                      <div class="formula-stage">
+                        <span class="stage-num">3</span>
+                        <span class="stage-label">最终热力值 = 基础风险分 x 趋势系数</span>
+                        <span class="stage-arrow">&rarr;</span>
+                        <span class="stage-result" style="background:{% if file.final_heat_score < 60.0 %}var(--yellow-bg);color:var(--yellow){% else %}var(--red-bg);color:var(--red){% endif %};">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+                      </div>
+                    </div>
+                  </div>
 
-    {% if !report.anomalies.is_empty() %}
-    <div class="section">
-        <h2>异常检测</h2>
-        {% for anomaly in report.anomalies %}
-        <div class="anomaly">
-            疑似异常: {{ anomaly }}
-        </div>
+                  <div class="detail-section-title" style="margin-top:16px;">相关依赖漏洞（此文件引用的依赖）</div>
+                  <div class="vuln-list">
+                    {% if self.top_risk_file_vuln_count(file.raw.path) == 0 %}
+                    <div style="padding:10px 13px;color:var(--text-muted);font-size:12px;background:var(--bg-deep);border:1px dashed var(--border-light);border-radius:var(--radius-xs);">
+                      &check; 该文件引用的依赖未发现公开漏洞
+                    </div>
+                    {% else %}
+                    {% for v in report.dependency_findings %}
+                      {% if self.vuln_affects_file(loop.index0, file.raw.path) %}
+                      <div class="vuln-item">
+                        <span class='pill {% if self.vuln_severity_eq(loop.index0, "Low") %}pill-low{% else if self.vuln_severity_eq(loop.index0, "Medium") %}pill-medium{% else if self.vuln_severity_eq(loop.index0, "High") %}pill-high{% else %}pill-critical{% endif %}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
+                        <div>
+                          <div class="vpkg">{{ v.package_name }} &nbsp;·&nbsp; <span class="vdetail">当前版本 <span style="font-family:var(--font-mono);color:var(--text-secondary);">{{ v.version }}</span></span></div>
+                          <div class="vdetail" style="margin-top:2px;">
+                            <span class="vid">{{ v.id }}</span>
+                            &nbsp;{{ self.truncate_str(v.summary, 40) }}
+                          </div>
+                        </div>
+                        <div class="vscore">{{ self.vuln_severity_text(loop.index0) }}</div>
+                      </div>
+                      {% endif %}
+                    {% endfor %}
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if report.top_risk_files.is_empty() %}
+          <tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">Top 风险文件为空（低风险仓库）</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== All files table (compact) ===== -->
+<div class="card" id="all-files" style="margin-bottom:16px;">
+  <div class="card-header">
+    <div>
+      <div class="card-title">所有文件（完整列表）</div>
+      <div class="card-subtitle">共 {{ self.format_number_usize(self.file_count_value()) }} 个源码文件</div>
+    </div>
+  </div>
+  <div class="risk-table-wrap">
+    <table class="risk-table">
+      <thead>
+        <tr>
+          <th style="width:40%;">文件路径</th>
+          <th>语言</th>
+          <th>LOC</th>
+          <th>圈复杂度</th>
+          <th>嵌套深度</th>
+          <th>提交数</th>
+          <th>热力值</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in report.files %}
+        <tr>
+          <td>
+            <div class="path-cell" data-filepath="{{ file.raw.path }}" onclick="_rbToggleFileDetail('{{ file.raw.path }}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              <span>{{ file.raw.path }}</span>
+            </div>
+          </td>
+          <td>{{ file.raw.language }}</td>
+          <td style="font-variant-numeric:tabular-nums;">{{ file.raw.loc }}</td>
+          <td style="font-variant-numeric:tabular-nums;">{{ file.raw.cyclomatic_complexity }}</td>
+          <td style="font-variant-numeric:tabular-nums;">{{ file.raw.max_if_nesting_depth }}</td>
+          <td style="font-variant-numeric:tabular-nums;">{{ file.raw.commit_count }}</td>
+          <td>
+            <div class="heat-score">
+              <span style="color:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+              <div class="heat-bar"><div class="heat-bar-fill" style="width:{{ self.fmt_f64v(file.final_heat_score, 0) }}%;background:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %};"></div></div>
+            </div>
+          </td>
+        </tr>
         {% endfor %}
-    </div>
-    {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
 
-    {% if !report.warnings.is_empty() %}
-    <div class="section">
-        <h2>警告信息</h2>
-        {% for warning in report.warnings %}
-        <div class="warning">{{ warning }}</div>
-        {% endfor %}
+<!-- ===== Row 3: Dependencies + Anomalies ===== -->
+<div class="dash-row">
+  <div class="card" id="deps" style="flex:1.3;">
+    <div class="card-header">
+      <div>
+        <div class="card-title">依赖安全漏洞</div>
+        <div class="card-subtitle">共 {{ self.format_number_usize(self.total_vulnerabilities_value()) }} 个公开漏洞（CVE / GHSA）</div>
+      </div>
     </div>
-    {% endif %}
-
-    <div class="section">
-        <h2>分析元数据</h2>
-        <div class="metadata">
-            <div class="metadata-item">
-                <div class="metadata-label">最大提交数</div>
-                <div class="metadata-value">{{ report.analysis_metadata.max_commits }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">历史是否截断</div>
-                <div class="metadata-value">{% if report.analysis_metadata.history_truncated %}是{% else %}否{% endif %}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">离线模式</div>
-                <div class="metadata-value">{% if report.analysis_metadata.offline %}是{% else %}否{% endif %}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">OSV 状态</div>
-                <div class="metadata-value">{{ report.analysis_metadata.osv_status }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">跳过符号链接</div>
-                <div class="metadata-value">{{ report.analysis_metadata.skipped_symlinks }}</div>
-            </div>
-            <div class="metadata-item">
-                <div class="metadata-label">跳过文件</div>
-                <div class="metadata-value">{{ report.analysis_metadata.skipped_files }}</div>
-            </div>
+    <div class="vuln-list">
+      {% if report.dependency_findings.is_empty() %}
+      <div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--bg-deep);border:1px dashed var(--border-light);border-radius:var(--radius-xs);">
+        &check; 未发现公开漏洞（离线模式下未查询 OSV）
+      </div>
+      {% else %}
+      {% for v in report.dependency_findings %}
+      <div class="vuln-item">
+        <span class='pill {% if self.vuln_severity_eq(loop.index0, "Low") %}pill-low{% else if self.vuln_severity_eq(loop.index0, "Medium") %}pill-medium{% else if self.vuln_severity_eq(loop.index0, "High") %}pill-high{% else %}pill-critical{% endif %}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
+        <div>
+          <div class="vpkg">{{ v.package_name }} {{ v.version }} &nbsp;<span style="color:var(--text-muted);font-size:11px;">&mdash; {{ v.ecosystem }}</span></div>
+          <div class="vdetail" style="margin-top:2px;">
+            <span class="vid">{{ v.id }}</span>
+            &middot; 影响文件 {{ self.vuln_affected_count(loop.index0) }} 个
+            &middot; {{ self.truncate_str(v.summary, 60) }}
+          </div>
         </div>
+        <div class="vscore">{{ self.vuln_severity_text(loop.index0) }}</div>
+      </div>
+      {% endfor %}
+      {% endif %}
     </div>
+  </div>
 
-    <div class="version-info">
-        由 Rustburn v{{ report.rustburn_version }} 生成<br>
-        Schema 版本: {{ report.schema_version }}<br>
-        分析版本: {{ report.analysis_version }}
+  <div class="card" id="anomalies" style="flex:1;">
+    <div class="card-header">
+      <div>
+        <div class="card-title">异常标记</div>
+        <div class="card-subtitle">规则驱动的可疑信号（{{ report.anomalies.len() }} 条）</div>
+      </div>
     </div>
+    <div class="anomaly-list">
+      {% if report.anomalies.is_empty() %}
+      <div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--bg-deep);border:1px dashed var(--border-light);border-radius:var(--radius-xs);">
+        &check; 没有检测到异常信号
+      </div>
+      {% else %}
+      {% for a in report.anomalies %}
+      <div class="anomaly-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v5M12 17v.5" stroke-linecap="round"/></svg>
+        <div class="anomaly-body">
+          <span class="asev">异常</span>{{ a }}
+        </div>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
 
-    <script>
-        const REPORT_DATA = {{ report_data_json|safe }};
+<!-- ===== About ===== -->
+<div class="card" id="about">
+  <div class="card-header">
+    <div>
+      <div class="card-title">关于报告</div>
+      <div class="card-subtitle">rustburn 采用三层算法公式，所有计算过程透明可验证</div>
+    </div>
+  </div>
+  <div class="about-grid">
+    <div class="about-card">
+      <h4>评分公式说明</h4>
+      <p>每一个文件的技术债风险评分经历三个阶段，最终得到 0-100 区间的最终热力值。</p>
+      <div class="formula-inline">
+        dimension_value = 归一化维度原始值<br>
+        percentile = 该文件在所有文件中的排名百分位<br>
+        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（percentile 加权）<br>
+        final_heat = base_risk * trend_coefficient
+      </div>
+      <p style="margin-top:10px;">
+        数据覆盖度：
+        <span class="pill {% if self.avg_confidence() >= 0.8 %}pill-low{% else if self.avg_confidence() >= 0.5 %}pill-medium{% else %}pill-high{% endif %}"><span class="dot"></span>已填充 &middot; 算法 {{ report.analysis_version }}</span>
+      </p>
+      <p style="margin-top:6px;">
+        CVE 数据源：
+        <span class="pill pill-muted"><span class="dot"></span>OSV.dev</span>
+      </p>
+    </div>
+    <div class="about-card">
+      <h4>分析元数据</h4>
+      <div class="metric-grid" style="margin-bottom:0;">
+        <div class="metric-item"><span class="mlabel">最大 commit 数</span><span class="mvalue">{{ report.analysis_metadata.max_commits }}</span></div>
+        <div class="metric-item"><span class="mlabel">历史截断</span><span class="mvalue">{% if report.analysis_metadata.history_truncated %}是{% else %}否{% endif %}</span></div>
+        <div class="metric-item"><span class="mlabel">离线模式</span><span class="mvalue">{% if report.analysis_metadata.offline %}是{% else %}否{% endif %}</span></div>
+        <div class="metric-item"><span class="mlabel">OSV 查询状态</span><span class="mvalue">{{ report.analysis_metadata.osv_status }}</span></div>
+        <div class="metric-item"><span class="mlabel">跳过符号链接</span><span class="mvalue">{{ report.analysis_metadata.skipped_symlinks }}</span></div>
+        <div class="metric-item"><span class="mlabel">跳过文件</span><span class="mvalue">{{ report.analysis_metadata.skipped_files }}</span></div>
+        <div class="metric-item"><span class="mlabel">支持语言</span><span class="mvalue">{{ self.format_supported_languages(report.analysis_metadata.supported_languages) }}</span></div>
+        <div class="metric-item"><span class="mlabel">分析耗时</span><span class="mvalue">{{ self.fmt_f64(report.analysis_metadata.elapsed_seconds, 2) }}s</span></div>
+      </div>
+    </div>
+  </div>
+</div>
 
-        function toggleDetail(path) {
-            const row = document.getElementById('detail-' + path);
-            if (row.style.display === 'none') {
-                row.style.display = 'table-row';
-            } else {
-                row.style.display = 'none';
+</main>
+</div>
+
+<div style="position:sticky;bottom:0;background:var(--bg-sidebar);border-top:1px solid var(--border-light);padding:8px 32px;text-align:center;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">
+  rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：https://rustburn.dev &nbsp;&nbsp;&nbsp; 报告生成时间：{{ report.scanned_at }}
+</div>
+
+<script>
+const REPORT_DATA = {{report_data_json|safe}};
+(function () {
+  'use strict';
+
+  // ========== Utilities ==========
+  var $ = function (id) { return document.getElementById(id); };
+
+  function showToast(msg) {
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 2200);
+  }
+
+  function getScoreColor(score) {
+    if (score < 30) return '#34d399';
+    if (score < 60) return '#fbbf24';
+    if (score < 80) return '#f97316';
+    return '#ef4444';
+  }
+
+  function getScoreBg(score) {
+    if (score < 30) return 'pill-low';
+    if (score < 60) return 'pill-medium';
+    if (score < 80) return 'pill-high';
+    return 'pill-critical';
+  }
+
+  // ========== Navigation ==========
+  document.querySelectorAll('.sidebar-nav a').forEach(function (link) {
+    link.addEventListener('click', function (e) {
+      var href = link.getAttribute('href');
+      if (href && href.charAt(0) === '#') {
+        e.preventDefault();
+        document.querySelectorAll('.sidebar-nav a').forEach(function (a) { a.classList.remove('active'); });
+        link.classList.add('active');
+        var target = $(href.substring(1));
+        if (target) {
+          var main = document.querySelector('.main');
+          var y = target.getBoundingClientRect().top + (main ? main.scrollTop : 0) - 16;
+          window.scrollTo({ top: y, behavior: 'smooth' });
+        }
+      }
+    });
+  });
+
+  // ========== KPI Ring Chart ==========
+  (function () {
+    var c = $('ring-chart');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var dpr = window.devicePixelRatio || 1;
+    var size = 140;
+    c.width = size * dpr; c.height = size * dpr;
+    c.style.width = size + 'px'; c.style.height = size + 'px';
+    ctx.scale(dpr, dpr);
+    var data = (typeof REPORT_DATA !== 'undefined') ? REPORT_DATA : null;
+    var score = data ? data.repo_total_heat_score : 0;
+    var cx = size / 2, cy = size / 2, r = 55, w = 11;
+    // Track
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(79, 140, 255, 0.1)';
+    ctx.lineWidth = w;
+    ctx.stroke();
+    // Gradient
+    var grad = ctx.createLinearGradient(0, 0, size, size);
+    grad.addColorStop(0, getScoreColor(score));
+    grad.addColorStop(1, getScoreColor(score * 0.7));
+    ctx.beginPath();
+    var pct = Math.max(0, Math.min(1, score / 100));
+    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * pct);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = w;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  })();
+
+  // ========== Treemap (Canvas, hierarchical) ==========
+  (function () {
+    var container = $('treemap');
+    if (!container) return;
+    var canvas = document.createElement('canvas');
+    var tooltip = document.createElement('div');
+    tooltip.className = 'treemap-tooltip';
+    tooltip.style.display = 'none';
+    container.appendChild(canvas);
+    container.appendChild(tooltip);
+
+    var data = (typeof REPORT_DATA !== 'undefined') ? REPORT_DATA : { files: [] };
+
+    // Build tree: directory -> list of files
+    function buildTree(files) {
+      var root = { name: '', children: {}, files: [], loc: 0, score: 0 };
+      files.forEach(function (f) {
+        var path = (f.raw && f.raw.path) || '';
+        var loc = (f.raw && f.raw.loc) || 0;
+        var score = f.final_heat_score || 0;
+        var parts = path.split('/').filter(Boolean);
+        if (parts.length < 2) {
+          root.files.push({ name: parts[0] || path, loc: loc, score: score });
+          root.loc += loc;
+        } else {
+          var dir = root;
+          var dpath = '';
+          for (var i = 0; i < parts.length - 1; i++) {
+            var p = parts[i];
+            dpath = dpath ? (dpath + '/' + p) : p;
+            if (!dir.children[p]) {
+              dir.children[p] = { name: dpath, children: {}, files: [], loc: 0, score: 0 };
             }
+            dir = dir.children[p];
+          }
+          var fname = parts[parts.length - 1];
+          dir.files.push({ name: fname, loc: loc, score: score, fullPath: path });
+          dir.loc += loc;
+          root.loc += loc;
         }
+      });
+      return root;
+    }
 
-        function getScoreColor(score) {
-            if (score < 30) return '#28a745';
-            if (score < 60) return '#ffc107';
-            if (score < 80) return '#fd7e14';
-            return '#dc3545';
-        }
+    function rectArea(r) { return (r.w > 0 && r.h > 0) ? r.w * r.h : 0; }
 
-        function renderTreemap() {
-            const container = document.getElementById('treemap');
-            const files = REPORT_DATA.files.filter(f => f.raw.loc > 0);
-            
-            if (files.length === 0) return;
-
-            const totalLoc = files.reduce((sum, f) => sum + f.raw.loc, 0);
-            const containerWidth = container.offsetWidth;
-            const containerHeight = container.offsetHeight;
-
-            let x = 0, y = 0, maxHeight = 0;
-            let rowWidth = 0;
-
-            files.sort((a, b) => b.raw.loc - a.raw.loc);
-
-            for (const file of files) {
-                const area = (file.raw.loc / totalLoc) * (containerWidth * containerHeight);
-                const width = Math.max(50, Math.sqrt(area));
-                const height = area / width;
-
-                if (x + width > containerWidth) {
-                    x = 0;
-                    y += maxHeight;
-                    maxHeight = 0;
-                }
-
-                const item = document.createElement('div');
-                item.className = 'treemap-item';
-                item.style.left = x + 'px';
-                item.style.top = y + 'px';
-                item.style.width = width + 'px';
-                item.style.height = height + 'px';
-                item.style.backgroundColor = getScoreColor(file.final_heat_score);
-                item.title = `${file.raw.path}\nLOC: ${file.raw.loc}\n分数: ${file.final_heat_score.toFixed(2)}`;
-                item.textContent = file.raw.path.split('/').pop();
-
-                container.appendChild(item);
-
-                x += width;
-                maxHeight = Math.max(maxHeight, height);
-            }
-        }
-
-        function renderTrendCharts() {
-            for (const file of REPORT_DATA.files) {
-                if (file.trend_history && file.trend_history.length > 0) {
-                    const canvas = document.getElementById('chart-' + file.raw.path);
-                    if (!canvas) continue;
-
-                    const ctx = canvas.getContext('2d');
-                    const width = canvas.width;
-                    const height = canvas.height;
-                    const padding = 40;
-
-                    const data = file.trend_history;
-                    const maxScore = Math.max(...data.map(d => d.base_risk_score), 100);
-                    const minScore = Math.min(...data.map(d => d.base_risk_score), 0);
-
-                    ctx.clearRect(0, 0, width, height);
-
-                    // Draw axes
-                    ctx.strokeStyle = '#ddd';
-                    ctx.beginPath();
-                    ctx.moveTo(padding, padding);
-                    ctx.lineTo(padding, height - padding);
-                    ctx.lineTo(width - padding, height - padding);
-                    ctx.stroke();
-
-                    // Draw line
-                    ctx.strokeStyle = '#667eea';
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-
-                    for (let i = 0; i < data.length; i++) {
-                        const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
-                        const y = height - padding - ((data[i].base_risk_score - minScore) / (maxScore - minScore)) * (height - 2 * padding);
-
-                        if (i === 0) {
-                            ctx.moveTo(x, y);
-                        } else {
-                            ctx.lineTo(x, y);
-                        }
-                    }
-                    ctx.stroke();
-
-                    // Draw points
-                    ctx.fillStyle = '#667eea';
-                    for (let i = 0; i < data.length; i++) {
-                        const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
-                        const y = height - padding - ((data[i].base_risk_score - minScore) / (maxScore - minScore)) * (height - 2 * padding);
-                        ctx.beginPath();
-                        ctx.arc(x, y, 3, 0, 2 * Math.PI);
-                        ctx.fill();
-                    }
-                }
-            }
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            renderTreemap();
-            renderTrendCharts();
+    function squarify(items, rect, result, depth) {
+      if (items.length === 0 || rect.w <= 0 || rect.h <= 0) return;
+      if (items.length === 1) {
+        result.push({
+          x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+          item: items[0], depth: depth
         });
-    </script>
+        return;
+      }
+      var total = items.reduce(function (s, i) { return s + i.loc; }, 0) || 1;
+      var rectAreaVal = rectArea(rect);
+      // Scale loc to area
+      var scale = rectAreaVal / total;
+
+      var horizontal = rect.w >= rect.h;
+      var side = horizontal ? rect.h : rect.w;
+
+      // Greedy squarification: place items one by one into the current row
+      var row = [];
+      var rowLoc = 0;
+      var rowArea = 0;
+      var worst = Infinity;
+
+      function worstRatio() {
+        if (row.length === 0) return Infinity;
+        var rowSide = horizontal ? (rowArea / side) : (rowArea / side);
+        var rowSidePx = rowArea / side;
+        var ratioMax = 0;
+        for (var i = 0; i < row.length; i++) {
+          var a = row[i].loc * scale;
+          var shortSide;
+          if (rowSidePx <= 0) { shortSide = 0; }
+          else {
+            var longSide = a / rowSidePx;
+            shortSide = Math.min(rowSidePx, longSide);
+          }
+          var ratio = (rowSidePx * rowSidePx) / (a || 1);
+          ratio = Math.max(ratio, (a || 1) / (rowSidePx * rowSidePx || 1));
+          if (ratio > ratioMax) ratioMax = ratio;
+        }
+        return ratioMax;
+      }
+
+      var remaining = items.slice();
+      while (remaining.length > 0) {
+        row = []; rowLoc = 0; rowArea = 0; worst = Infinity;
+        while (remaining.length > 0) {
+          var next = remaining[0];
+          var tryItems = row.concat([next]);
+          // recompute worst for tryItems
+          var rw = [];
+          var rl = 0;
+          for (var z = 0; z < tryItems.length; z++) {
+            rw.push(tryItems[z]);
+            rl += tryItems[z].loc;
+          }
+          var ra = rl * scale;
+          var rspx = (ra > 0 && side > 0) ? (ra / side) : 0;
+          var wr = 0;
+          for (var z2 = 0; z2 < rw.length; z2++) {
+            var a2 = rw[z2].loc * scale;
+            var ls = rspx > 0 ? (a2 / rspx) : 0;
+            var s2 = Math.min(rspx, ls);
+            var r2 = (rspx * rspx) / (a2 || 1);
+            r2 = Math.max(r2, (a2 || 1) / (rspx * rspx || 1));
+            if (r2 > wr) wr = r2;
+          }
+          if (wr <= worst) {
+            worst = wr;
+            row = tryItems;
+            rowLoc = rl;
+            rowArea = ra;
+            remaining.shift();
+          } else {
+            break;
+          }
+        }
+
+        // Draw row
+        var rowRect;
+        var rowSidePx = (rowArea > 0 && side > 0) ? (rowArea / side) : 0;
+        var rowItems = [];
+        if (horizontal) {
+          rowRect = { x: rect.x, y: rect.y, w: rowSidePx, h: rect.h };
+          var posY = rect.y;
+          for (var i = 0; i < row.length; i++) {
+            var fArea = row[i].loc * scale;
+            var hRect = rowSidePx > 0 ? (fArea / rowSidePx) : 0;
+            rowItems.push({
+              x: rect.x, y: posY, w: rowSidePx, h: hRect,
+              item: row[i], depth: depth
+            });
+            posY += hRect;
+          }
+          rect.x += rowSidePx;
+          rect.w -= rowSidePx;
+        } else {
+          rowRect = { x: rect.x, y: rect.y, w: rect.w, h: rowSidePx };
+          var posX = rect.x;
+          for (var j = 0; j < row.length; j++) {
+            var fArea2 = row[j].loc * scale;
+            var wRect = rowSidePx > 0 ? (fArea2 / rowSidePx) : 0;
+            rowItems.push({
+              x: posX, y: rect.y, w: wRect, h: rowSidePx,
+              item: row[j], depth: depth
+            });
+            posX += wRect;
+          }
+          rect.y += rowSidePx;
+          rect.h -= rowSidePx;
+        }
+        for (var k = 0; k < rowItems.length; k++) {
+          result.push(rowItems[k]);
+        }
+        side = horizontal ? rect.h : rect.w;
+        horizontal = rect.w >= rect.h;
+      }
+    }
+
+    var root = buildTree(data.files || []);
+    // Gather top-level dirs + files as treemap input
+    var topItems = [];
+    Object.keys(root.children).forEach(function (k) {
+      var d = root.children[k];
+      var avgScore = d.loc > 0
+        ? d.files.reduce(function (s, f) { return s + f.score * f.loc; }, 0) / d.loc
+        : 0;
+      topItems.push({
+        name: d.name, isDir: true, loc: d.loc, score: avgScore, children: d.files
+      });
+    });
+    root.files.forEach(function (f) {
+      topItems.push({ name: f.name, isDir: false, loc: f.loc, score: f.score, fullPath: f.fullPath || f.name });
+    });
+    topItems.sort(function (a, b) { return b.loc - a.loc; });
+
+    function render() {
+      var w = container.clientWidth;
+      var h = container.clientHeight;
+      var dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      var ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      var rect = { x: 2, y: 2, w: w - 4, h: h - 4 };
+      var result = [];
+      squarify(topItems, rect, result, 0);
+      container._treemapBoxes = [];
+      for (var i = 0; i < result.length; i++) {
+        var b = result[i];
+        if (b.w < 0.5 || b.h < 0.5) continue;
+        var color = getScoreColor(b.item.score || 0);
+        // Shade directories slightly darker
+        var isDir = !!b.item.isDir;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = isDir ? 0.78 : 0.88;
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.globalAlpha = 1;
+        // Inner border
+        ctx.strokeStyle = 'rgba(11, 15, 26, 0.55)';
+        ctx.lineWidth = isDir ? 1.5 : 1;
+        ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+
+        // Label
+        var padding = isDir ? 10 : 6;
+        var availW = b.w - padding * 2;
+        var availH = b.h - padding * 2;
+        if (availW > 40 && availH > 22) {
+          ctx.fillStyle = 'rgba(11, 15, 26, 0.88)';
+          ctx.font = (isDir ? '600 ' : '500 ') + Math.min(13, Math.max(9, Math.min(availH - 4, availW / 6))) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
+          ctx.textBaseline = 'top';
+          var label = b.item.name || '';
+          // Truncate
+          var maxChars = Math.max(3, Math.floor(availW / 8));
+          if (label.length > maxChars) label = label.substring(0, maxChars - 1) + '\u2026';
+          var textW = ctx.measureText(label).width;
+          if (isDir && availH > 50) {
+            var locText = (b.item.loc || 0).toLocaleString() + ' LOC';
+            var scoreText = (b.item.score || 0).toFixed(1);
+            var subFont = Math.min(11, Math.max(8, Math.min(availH / 5, availW / 10))) + 'px -apple-system, system-ui, sans-serif';
+            ctx.font = '500 ' + subFont;
+            ctx.fillStyle = 'rgba(11, 15, 26, 0.82)';
+            ctx.fillText(locText, b.x + padding, b.y + padding + 2);
+            ctx.font = '600 ' + Math.min(13, Math.max(9, Math.min(availH - 4, availW / 6))) + 'px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+            ctx.fillStyle = 'rgba(11, 15, 26, 0.92)';
+            ctx.fillText(label, b.x + padding, b.y + padding + 18);
+            ctx.font = '700 ' + subFont;
+            ctx.fillStyle = 'rgba(11, 15, 26, 0.9)';
+            ctx.fillText(scoreText, b.x + b.w - padding - ctx.measureText(scoreText).width, b.y + padding + 2);
+          } else {
+            ctx.fillText(label, b.x + padding, b.y + Math.max(2, (availH - 14) / 2));
+          }
+        }
+        container._treemapBoxes.push(b);
+      }
+    }
+    render();
+    window.addEventListener('resize', render);
+
+    // Hover
+    function canvasCoords(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+    canvas.addEventListener('mousemove', function (e) {
+      var p = canvasCoords(e);
+      var boxes = container._treemapBoxes || [];
+      var hit = null;
+      for (var i = 0; i < boxes.length; i++) {
+        var b = boxes[i];
+        if (p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) {
+          hit = b; break;
+        }
+      }
+      if (hit) {
+        var cr = container.getBoundingClientRect();
+        tooltip.style.display = 'block';
+        tooltip.style.left = (hit.x + hit.w + 8) + 'px';
+        tooltip.style.top = (hit.y + 4) + 'px';
+        var name = hit.item.isDir ? (hit.item.name + '/ [目录]') : (hit.item.fullPath || hit.item.name);
+        var col = getScoreColor(hit.item.score || 0);
+        tooltip.innerHTML = '<div class="tpath">' + name + '</div>'
+          + '<div class="tmetric">LOC: <span class="tscore" style="color:var(--text-primary)">' + (hit.item.loc || 0).toLocaleString() + '</span></div>'
+          + '<div class="tmetric">热力值: <span class="tscore" style="color:' + col + '">' + (hit.item.score || 0).toFixed(1) + '</span></div>';
+        // Clamp to right
+        var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+        if (hit.x + hit.w + 12 + tw > container.clientWidth) {
+          tooltip.style.left = (hit.x - tw - 6) + 'px';
+        }
+        if (hit.y + 4 + th > container.clientHeight) {
+          tooltip.style.top = (container.clientHeight - th - 2) + 'px';
+        }
+      } else {
+        tooltip.style.display = 'none';
+      }
+    });
+    canvas.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
+  })();
+
+  // ========== Mini Trend Sparklines (KPI cards) ==========
+  function drawSparkline(canvasId, data, color) {
+    var c = $(canvasId);
+    if (!c || !data || data.length < 2) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = 88, h = 28;
+    c.width = w * dpr; c.height = h * dpr;
+    c.style.width = w + 'px'; c.style.height = h + 'px';
+    var ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    var max = Math.max.apply(null, data), min = Math.min.apply(null, data);
+    var range = (max - min) || 1;
+    var padL = 0, padR = 0, padT = 3, padB = 3;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (var i = 0; i < data.length; i++) {
+      var x = padL + (i / (data.length - 1)) * (w - padL - padR);
+      var y = padT + (1 - (data[i] - min) / range) * (h - padT - padB);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // Fill under
+    var lastIdx = data.length - 1;
+    var lastX = padL + (lastIdx / lastIdx) * (w - padL - padR);
+    var baseY = h - padB;
+    ctx.lineTo(lastX, baseY); ctx.lineTo(padL, baseY); ctx.closePath();
+    ctx.fillStyle = color + '22';
+    ctx.fill();
+  }
+
+  drawSparkline('spark-files', [10, 18, 22, 19, 25, 28, 24, 32, 30, 34, 38, 42, 45, 48, 52], 'var(--accent)');
+  drawSparkline('spark-loc', [120, 140, 155, 170, 165, 190, 210, 225, 238, 250, 275, 290, 310, 328, 340], 'var(--green)');
+
+  // ========== Ring Chart (Top 5% pie) ==========
+  (function () {
+    var c = $('toprisk-pie');
+    if (!c) return;
+    var data = (typeof REPORT_DATA !== 'undefined') ? REPORT_DATA : null;
+    if (!data) return;
+    var total = (data.analysis_metadata && data.analysis_metadata.file_count) || 1;
+    var top = (data.top_risk_files && data.top_risk_files.length) || 0;
+    var rest = Math.max(0, total - top);
+    var dpr = window.devicePixelRatio || 1;
+    var size = 100;
+    c.width = size * dpr; c.height = size * dpr;
+    c.style.width = size + 'px'; c.style.height = size + 'px';
+    var ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+    var cx = size / 2, cy = size / 2, r = 32, inner = 22;
+    var start = -Math.PI / 2;
+    var totalSum = total || 1;
+    var segs = [
+      { v: top, color: '#ef4444' },
+      { v: rest, color: '#222c44' }
+    ];
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      var pct = s.v / totalSum;
+      if (pct <= 0) continue;
+      var end = start + Math.PI * 2 * pct;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, start, end);
+      ctx.arc(cx, cy, inner, end, start, true);
+      ctx.closePath();
+      ctx.fillStyle = s.color;
+      ctx.fill();
+      start = end;
+    }
+    // Center text
+    ctx.fillStyle = 'var(--text-primary)';
+    ctx.font = '600 17px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ef4444';
+    ctx.fillText(((top / totalSum) * 100).toFixed(1) + '%', cx, cy - 2);
+    ctx.fillStyle = '#5d6d8c';
+    ctx.font = '10px -apple-system, system-ui, sans-serif';
+    ctx.fillText(top + '/' + total, cx, cy + 12);
+  })();
+
+  // ========== File Detail Toggle + Tabs ==========
+  function toggleFileDetail(path) {
+    var safeId = path.replace(/[^a-zA-Z0-9_-]/g, '_');
+    var rowId = 'expanded-' + safeId;
+    var expanded = document.getElementById(rowId);
+    var triggerRows = document.querySelectorAll('[data-filepath="' + path + '"]');
+    if (!expanded) return;
+    var isOpen = expanded.classList.contains('open');
+    document.querySelectorAll('.file-detail.open').forEach(function (d) { d.classList.remove('open'); });
+    document.querySelectorAll('.risk-table tbody tr.expanded').forEach(function (r) { r.classList.remove('expanded'); });
+    if (!isOpen) {
+      expanded.classList.add('open');
+      triggerRows.forEach(function (r) { r.classList.add('expanded'); });
+      // 如果趋势 pane 默认显示，尝试渲染趋势图
+      var trendCanvas = expanded.querySelector('[data-pane-idx="2"] canvas[data-trend-file]');
+      if (trendCanvas) renderTrendForCanvas(trendCanvas);
+      // 绑定 tab 点击事件（仅一次）
+      bindDetailTabs(expanded);
+    }
+  }
+  // Expose
+  window._rbToggleFileDetail = toggleFileDetail;
+
+  function bindDetailTabs(root) {
+    var tabs = root.querySelectorAll('[data-tabs] .detail-tab');
+    tabs.forEach(function (tab) {
+      if (tab._rbBound) return;
+      tab._rbBound = true;
+      tab.addEventListener('click', function () {
+        var idx = tab.getAttribute('data-tab-idx');
+        var inner = tab.closest('.detail-inner');
+        if (!inner) return;
+        inner.querySelectorAll('.detail-tab').forEach(function (t) { t.classList.remove('active'); });
+        inner.querySelectorAll('.detail-pane').forEach(function (p) { p.classList.remove('active'); });
+        tab.classList.add('active');
+        var pane = inner.querySelector('.detail-pane[data-pane-idx="' + idx + '"]');
+        if (pane) {
+          pane.classList.add('active');
+          // 切换到趋势 tab 时渲染图表
+          if (idx === '2') {
+            var canvas = pane.querySelector('canvas[data-trend-file]');
+            if (canvas) renderTrendForCanvas(canvas);
+          }
+        }
+      });
+    });
+  }
+
+  // 根据 canvas 的 data 属性渲染趋势图
+  function renderTrendForCanvas(canvas) {
+    if (!canvas || canvas._rbRendered) return;
+    canvas._rbRendered = true;
+    var path = canvas.getAttribute('data-trend-file');
+    var baseStr = canvas.getAttribute('data-trend-base');
+    var base = baseStr ? parseFloat(baseStr) : null;
+    // 从 REPORT_DATA 找历史数据
+    var history = [];
+    if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA.files) {
+      for (var i = 0; i < REPORT_DATA.files.length; i++) {
+        var f = REPORT_DATA.files[i];
+        if (f.raw && f.raw.path === path) {
+          history = f.trend_history || [];
+          break;
+        }
+      }
+      if (history.length === 0 && REPORT_DATA.top_risk_files) {
+        for (var j = 0; j < REPORT_DATA.top_risk_files.length; j++) {
+          var f2 = REPORT_DATA.top_risk_files[j];
+          if (f2.raw && f2.raw.path === path) {
+            history = f2.trend_history || [];
+            break;
+          }
+        }
+      }
+    }
+    drawFileTrendChartForCanvas(canvas, history, base);
+  }
+
+  // ========== Trend Chart per file (line chart) ==========
+  function drawFileTrendChartForCanvas(c, history, baseRisk) {
+    if (!c) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth || 480;
+    var h = 190;
+    c.width = w * dpr; c.height = h * dpr;
+    c.style.height = h + 'px';
+    var ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    var padL = 36, padR = 12, padT = 14, padB = 26;
+    var innerW = w - padL - padR, innerH = h - padT - padB;
+
+    // Grid + Y axis
+    ctx.strokeStyle = 'rgba(76, 100, 145, 0.1)';
+    ctx.fillStyle = '#5d6d8c';
+    ctx.font = '10px ' + getComputedStyle(document.body).fontFamily;
+    ctx.textBaseline = 'middle';
+    var yTicks = [0, 25, 50, 75, 100];
+    for (var ti = 0; ti < yTicks.length; ti++) {
+      var yVal = yTicks[ti];
+      var y = padT + (1 - yVal / 100) * innerH;
+      ctx.strokeStyle = 'rgba(76, 100, 145, 0.1)';
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.strokeStyle = 'rgba(76, 100, 145, 0.18)';
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL - 4, y); ctx.stroke();
+      ctx.textAlign = 'right';
+      ctx.fillText(String(yVal), padL - 6, y);
+    }
+
+    var points = [];
+    if (history && history.length > 1) {
+      for (var i = 0; i < history.length; i++) {
+        var x = padL + (i / (history.length - 1)) * innerW;
+        var s = history[i].base_risk_score;
+        var y = padT + (1 - Math.max(0, Math.min(100, s)) / 100) * innerH;
+        points.push({ x: x, y: y, score: s, date: history[i].snapshot_date });
+      }
+    }
+    if (baseRisk != null && !isNaN(baseRisk)) {
+      points.push({
+        x: padL + innerW,
+        y: padT + (1 - Math.max(0, Math.min(100, baseRisk)) / 100) * innerH,
+        score: baseRisk,
+        date: 'now'
+      });
+    }
+
+    if (points.length > 1) {
+      // Gradient fill
+      var lastIdx = points.length - 1;
+      var grad = ctx.createLinearGradient(0, padT, 0, padT + innerH);
+      grad.addColorStop(0, 'rgba(239, 68, 68, 0.28)');
+      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, padT + innerH);
+      for (var k = 0; k < points.length; k++) { ctx.lineTo(points[k].x, points[k].y); }
+      ctx.lineTo(points[lastIdx].x, padT + innerH);
+      ctx.closePath();
+      ctx.fill();
+
+      // Line
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (var k2 = 0; k2 < points.length; k2++) {
+        if (k2 === 0) ctx.moveTo(points[k2].x, points[k2].y);
+        else ctx.lineTo(points[k2].x, points[k2].y);
+      }
+      ctx.stroke();
+
+      // Dots
+      ctx.fillStyle = '#ef4444';
+      for (var k3 = 0; k3 < points.length; k3++) {
+        ctx.beginPath();
+        ctx.arc(points[k3].x, points[k3].y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Last dot bigger
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(points[lastIdx].x, points[lastIdx].y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // X axis labels (first / mid / last)
+      ctx.fillStyle = '#5d6d8c';
+      ctx.font = '9px ' + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      function fmtDate(s) {
+        if (!s || s === 'now') return '现在';
+        var m = /(\d{4}-\d{2}-\d{2})/.exec(s);
+        return m ? m[1].substring(5) : s.substring(0, 7);
+      }
+      var indices = [0, Math.floor(points.length / 2), lastIdx];
+      for (var li = 0; li < indices.length; li++) {
+        var idx = indices[li];
+        ctx.fillText(fmtDate(points[idx].date || ''), points[idx].x, padT + innerH + 6);
+      }
+    }
+  }
+  function drawFileTrendChart(canvasId, history, baseRisk) {
+    drawFileTrendChartForCanvas($(canvasId), history, baseRisk);
+  }
+  window._rbDrawFileTrend = drawFileTrendChart;
+
+  // ========== Formula Toggle ==========
+  function toggleFormula(btn) {
+    var body = btn.nextElementSibling;
+    var open = btn.classList.toggle('open');
+    if (body && body.classList) {
+      body.classList.toggle('open', open);
+    }
+  }
+  window._rbToggleFormula = toggleFormula;
+
+  // ========== JSON Export ==========
+  function exportJSON() {
+    if (typeof REPORT_DATA === 'undefined') {
+      showToast('报告数据未找到');
+      return;
+    }
+    try {
+      var json = JSON.stringify(REPORT_DATA, null, 2);
+      var blob = new Blob([json], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var rp = (REPORT_DATA.repo_path || 'repo').replace(/[\\/]/g, '_');
+      a.href = url;
+      a.download = 'rustburn-' + rp + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      showToast('已导出 JSON');
+    } catch (e) {
+      showToast('导出失败: ' + e.message);
+    }
+  }
+  window._rbExportJSON = exportJSON;
+
+  // ========== Share ==========
+  function shareReport() {
+    var url = window.location.href;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(function () {
+        showToast('链接已复制到剪贴板');
+      }).catch(function () {
+        showToast('复制失败');
+      });
+    } else {
+      showToast('当前环境不支持复制');
+    }
+  }
+  window._rbShareReport = shareReport;
+})();
+</script>
 </body>
 </html>

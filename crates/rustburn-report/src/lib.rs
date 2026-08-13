@@ -66,7 +66,12 @@ impl<'a> ReportTemplate<'a> {
     }
 
     /// 格式化 f64（通过值，用于模板中的方法返回值/表达式）
-    fn fmt_f64v(&self, value: f64, precision: usize) -> String {
+    fn fmt_f64v(&self, value: &f64, precision: usize) -> String {
+        format!("{:.prec$}", value, prec = precision)
+    }
+
+    /// 格式化 f64（通过值类型，用于直接返回值的表达式）
+    fn fmt_f64val(&self, value: f64, precision: usize) -> String {
         format!("{:.prec$}", value, prec = precision)
     }
 
@@ -83,8 +88,8 @@ impl<'a> ReportTemplate<'a> {
         result.chars().rev().collect()
     }
 
-    /// 格式化文件数量（带千分位，接受 &usize）
-    fn format_number_usize(&self, value: &usize) -> String {
+    /// 格式化文件数量（带千分位，接受 usize 值）
+    fn format_number_usize(&self, value: usize) -> String {
         let s = value.to_string();
         let mut result = String::new();
         for (i, c) in s.chars().rev().enumerate() {
@@ -94,6 +99,11 @@ impl<'a> ReportTemplate<'a> {
             result.push(c);
         }
         result.chars().rev().collect()
+    }
+
+    /// 支持语言列表格式化
+    fn format_supported_languages(&self, langs: &[String]) -> String {
+        langs.join(", ")
     }
 
     /// 计算平均置信度
@@ -157,6 +167,123 @@ impl<'a> ReportTemplate<'a> {
         }
         let sum: f64 = history.iter().map(|s| s.base_risk_score).sum();
         sum / history.len() as f64
+    }
+
+    /// 截断字符串（替代 askama 的 truncate filter）
+    fn truncate_str(&self, value: &str, len: usize) -> String {
+        if value.char_indices().nth(len).is_none() {
+            return value.to_string();
+        }
+        value.char_indices().take(len).map(|(_, c)| c).collect()
+    }
+
+    /// 比较 Severity 是否等于给定字符串
+    fn severity_eq(&self, severity: &Severity, name: &str) -> bool {
+        match name {
+            "Low" => matches!(severity, Severity::Low),
+            "Medium" => matches!(severity, Severity::Medium),
+            "High" => matches!(severity, Severity::High),
+            "Critical" => matches!(severity, Severity::Critical),
+            _ => false,
+        }
+    }
+
+    /// 返回 max_cve_severity 的显示文本
+    fn severity_text(&self, severity: &Severity) -> &'static str {
+        match severity {
+            Severity::None => "None",
+            Severity::Low => "Low",
+            Severity::Medium => "Medium",
+            Severity::High => "High",
+            Severity::Critical => "Critical",
+        }
+    }
+
+    /// 检查文件路径是否在 affected_files 中（通过值传递切片）
+    fn file_in_vuln(&self, affected_files: &[String], path: &str) -> bool {
+        affected_files.iter().any(|f| f == path)
+    }
+
+    /// 用于模板：检查依赖漏洞项是否影响指定路径（遍历索引）
+    fn vuln_affects_file(&self, vuln_idx: &usize, path: &str) -> bool {
+        self.report
+            .dependency_findings
+            .get(*vuln_idx)
+            .map(|v| v.affected_files.iter().any(|f| f == path))
+            .unwrap_or(false)
+    }
+
+    /// 获取漏洞严重度（通过索引）
+    fn vuln_severity(&self, idx: usize) -> Severity {
+        self.report
+            .dependency_findings
+            .get(idx)
+            .map(|v| v.severity)
+            .unwrap_or(Severity::None)
+    }
+
+    /// 获取漏洞严重度文本（通过索引）
+    fn vuln_severity_text(&self, idx: &usize) -> &'static str {
+        if let Some(v) = self.report.dependency_findings.get(*idx) {
+            self.severity_text(&v.severity)
+        } else {
+            "None"
+        }
+    }
+
+    /// 检查漏洞严重度是否等于 name（通过索引）
+    fn vuln_severity_eq(&self, idx: &usize, name: &str) -> bool {
+        if let Some(v) = self.report.dependency_findings.get(*idx) {
+            self.severity_eq(&v.severity, name)
+        } else {
+            false
+        }
+    }
+
+    /// 获取漏洞影响文件数量（通过索引）
+    fn vuln_affected_count(&self, idx: &usize) -> usize {
+        self.report
+            .dependency_findings
+            .get(*idx)
+            .map(|v| v.affected_files.len())
+            .unwrap_or(0)
+    }
+
+    /// 统计 Top 风险中有漏洞的文件数（为 0 时使用空模板分支）
+    fn top_risk_file_vuln_count(&self, path: &str) -> usize {
+        self.report
+            .dependency_findings
+            .iter()
+            .filter(|v| v.affected_files.iter().any(|f| f == path))
+            .count()
+    }
+
+    /// 将文件路径转换为安全的 DOM ID（替换非字母数字字符为下划线）
+    fn path_to_dom_id(&self, path: &str) -> String {
+        path.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    /// 获取文件数量值
+    fn file_count_value(&self) -> usize {
+        self.report.analysis_metadata.file_count
+    }
+
+    /// 获取 top_risk_count 值
+    fn top_risk_count_value(&self) -> usize {
+        self.report.top_risk_files.len()
+    }
+
+    /// 获取 total_vulnerabilities 值
+    fn total_vulnerabilities_value(&self) -> usize {
+        self.report.dependency_findings.len()
     }
 }
 
@@ -267,6 +394,12 @@ mod tests {
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("src/main.rs"));
         assert!(html.contains("45.00"));
+        // CSS 与 JS 已内联到导出的单个 HTML 文件
+        assert!(html.contains(":root"));
+        assert!(html.contains("toggleFileDetail"));
+        // 嵌入的 JSON 不应被 HTML 转义，否则前端脚本解析失败
+        assert!(html.contains("const REPORT_DATA = {"));
+        assert!(!html.contains("&quot;"));
     }
 
     #[test]
