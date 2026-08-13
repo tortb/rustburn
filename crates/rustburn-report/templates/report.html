@@ -664,7 +664,7 @@ svg { display: block; flex-shrink: 0; }
 .risk-card.open .risk-card-body { display: block; }
 .heat-bar-sm { width: 74px; height: 6px; }
 
-/* ===== 三层公式概览（展开态） ===== */
+/* ===== 五维度公式概览（展开态） ===== */
 .formula-overview { margin-bottom: 12px; }
 .fo-title { font-size: 11.5px; color: var(--text-muted); margin-bottom: 8px; letter-spacing: 0.02em; }
 .fo-bars { display: flex; flex-direction: column; gap: 7px; }
@@ -1318,13 +1318,13 @@ svg { display: block; flex-shrink: 0; }
   <div class="card-header">
     <div>
       <div class="card-title">关于报告</div>
-      <div class="card-subtitle">rustburn 采用三层算法公式，所有计算过程透明可验证</div>
+      <div class="card-subtitle">rustburn 采用五维度算法公式，所有计算过程透明可验证</div>
     </div>
   </div>
   <div class="about-grid">
     <div class="about-card">
       <h4>评分公式说明</h4>
-      <p>每一个文件的技术债风险评分经历三个阶段，最终得到 0-100 区间的最终热力值。</p>
+      <p>每一个文件的技术债风险评分由五个独立维度评分经归一层加权合成，最终得到 0-100 区间的最终热力值。</p>
       <div class="formula-inline">
         每个文件在五个维度上各自得到独立风险分（0-100）：<br>
         complexity（复杂度）/ duplication（重复代码）/ test（测试）/ change_risk（变更风险）/ dependency（依赖）<br>
@@ -1364,7 +1364,7 @@ svg { display: block; flex-shrink: 0; }
 </div>
 
 <script>
-const REPORT_DATA = {{report_data_json|safe}};
+const REPORT_DATA = {{ report_data_json|safe }};
 (function () {
   'use strict';
 
