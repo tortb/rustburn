@@ -445,6 +445,42 @@ mod tests {
         (dir, repo)
     }
 
+    /// 防刷分测试：历史重写启发式检测（cli-spec §15）。
+    #[test]
+    fn test_detect_history_rewrite() {
+        let (dir, _repo) = create_temp_repo();
+
+        // 写入无关键词的 reflog → 无法证明，返回 Unknown
+        let log_dir = dir.path().join(".git/logs");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(log_dir.join("HEAD"), "abc def 2024-01-01 commit: init\n").unwrap();
+        assert_eq!(
+            detect_history_rewrite(dir.path()),
+            HistoryRewriteState::Unknown
+        );
+
+        // 含 force-push 关键词 → Detected
+        fs::write(log_dir.join("HEAD"), "abc def force push\n").unwrap();
+        assert_eq!(
+            detect_history_rewrite(dir.path()),
+            HistoryRewriteState::Detected
+        );
+
+        // 含 rebase 关键词 → Detected
+        fs::write(log_dir.join("HEAD"), "abc def rebase finished\n").unwrap();
+        assert_eq!(
+            detect_history_rewrite(dir.path()),
+            HistoryRewriteState::Detected
+        );
+
+        // reflog 缺失 → Unknown（不 panic）
+        fs::remove_file(log_dir.join("HEAD")).unwrap();
+        assert_eq!(
+            detect_history_rewrite(dir.path()),
+            HistoryRewriteState::Unknown
+        );
+    }
+
     /// 在仓库中创建文件并提交。
     fn commit_file(
         repo: &Repository,

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rustburn-cli",
     "crates/rustburn-core",
     "crates/rustburn-report",
 ]

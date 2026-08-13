@@ -103,7 +103,7 @@ fn calculate_recency_risk(last_modified_days_ago: u32) -> f64 {
 /// - percentile = r / file_count * 100，r 从 1 开始
 /// - 单文件仓库：percentile = 50 并产生 warning
 pub fn calculate_percentile_scores(
-    _metrics: &FileRawMetrics,
+    current: &DimensionValues,
     all_dimension_values: &[DimensionValues],
 ) -> FilePercentileScores {
     // 无数据或单文件仓库：无法计算相对排名，统一返回 50
@@ -130,18 +130,9 @@ pub fn calculate_percentile_scores(
         .collect();
 
     // 计算当前文件的维度值
-    let current_complexity = all_dimension_values
-        .first()
-        .map(|d| d.complexity_value)
-        .unwrap_or(0.0);
-    let current_history = all_dimension_values
-        .first()
-        .map(|d| d.history_value)
-        .unwrap_or(0.0);
-    let current_dependency = all_dimension_values
-        .first()
-        .map(|d| d.dependency_value)
-        .unwrap_or(0.0);
+    let current_complexity = current.complexity_value;
+    let current_history = current.history_value;
+    let current_dependency = current.dependency_value;
 
     FilePercentileScores {
         complexity_risk: calculate_percentile(current_complexity, &complexity_values),
@@ -159,6 +150,12 @@ pub fn calculate_percentile_scores(
 /// - percentile = r / file_count * 100
 fn calculate_percentile(value: f64, all_values: &[f64]) -> f64 {
     if all_values.is_empty() {
+        return 50.0;
+    }
+
+    // 所有值相同：该维度无法区分文件，返回中性 50
+    // （与单文件仓库同理，避免无区分度的维度被顶到 100 分位后拉满 base_risk）
+    if all_values.iter().all(|v| *v == all_values[0]) {
         return 50.0;
     }
 
@@ -393,7 +390,7 @@ mod tests {
     fn test_percentile_single_file() {
         let metrics = create_test_metrics();
         let dims = vec![calculate_dimension_values(&metrics, 10, 5, 3, 5)];
-        let percentiles = calculate_percentile_scores(&metrics, &dims);
+        let percentiles = calculate_percentile_scores(&dims[0], &dims);
 
         // 单文件仓库应返回 50
         assert_eq!(percentiles.complexity_risk, 50.0);
@@ -418,10 +415,20 @@ mod tests {
             calculate_dimension_values(&metrics3, 20, 5, 3, 5),
         ];
 
-        let percentiles = calculate_percentile_scores(&metrics2, &dims);
+        // 复杂度值 18 < 20 < 22，percentile 必须递增且能区分文件
+        let p1 = calculate_percentile_scores(&dims[0], &dims);
+        let p2 = calculate_percentile_scores(&dims[1], &dims);
+        let p3 = calculate_percentile_scores(&dims[2], &dims);
+        assert!(
+            p1.complexity_risk < p2.complexity_risk && p2.complexity_risk < p3.complexity_risk,
+            "percentile 应随维度值单调递增: {} / {} / {}",
+            p1.complexity_risk,
+            p2.complexity_risk,
+            p3.complexity_risk
+        );
 
-        // metrics2 的复杂度应该在中位数附近
-        assert!(percentiles.complexity_risk > 0.0 && percentiles.complexity_risk <= 100.0);
+        // metrics2 复杂度处于中位：排序 [18,20,22]，rank=2 → 2/3*100 ≈ 66.7
+        assert!((p2.complexity_risk - 200.0 / 3.0).abs() < 0.01);
     }
 
     #[test]
@@ -635,6 +642,53 @@ mod tests {
         let top = calculate_top_risk_files(&files);
         // 分数相同时应按路径字典序
         assert_eq!(top[0].raw.path, "a.rs");
+    }
+
+    /// 防刷分测试：函数拆分不显著改变分数（cli-spec §15）。
+    ///
+    /// 拆分行为会令每个文件的复杂度综合值同比例下降，但 percentile 是相对排名：
+    /// 全仓库同比例下降后排序不变，base_risk_score 保持不变（变化 <= 15%）。
+    #[test]
+    fn test_anti_cheat_function_split() {
+        let before = vec![
+            DimensionValues {
+                complexity_value: 20.0,
+                history_value: 30.0,
+                dependency_value: 10.0,
+            },
+            DimensionValues {
+                complexity_value: 40.0,
+                history_value: 30.0,
+                dependency_value: 10.0,
+            },
+            DimensionValues {
+                complexity_value: 60.0,
+                history_value: 30.0,
+                dependency_value: 10.0,
+            },
+        ];
+        // 模拟全仓库函数拆分：复杂度综合值同比例减半
+        let after: Vec<DimensionValues> = before
+            .iter()
+            .map(|d| DimensionValues {
+                complexity_value: d.complexity_value * 0.5,
+                history_value: d.history_value,
+                dependency_value: d.dependency_value,
+            })
+            .collect();
+
+        for i in 0..before.len() {
+            let pb = calculate_percentile_scores(&before[i], &before);
+            let pa = calculate_percentile_scores(&after[i], &after);
+            let base_b = calculate_base_risk_score(&pb);
+            let base_a = calculate_base_risk_score(&pa);
+            let relative_change = (base_a - base_b).abs() / base_b.max(0.01);
+            assert!(
+                relative_change <= 0.15,
+                "拆分后 base_risk 相对变化 {} 超过 15%",
+                relative_change
+            );
+        }
     }
 
     fn create_test_file_score(path: &str, loc: u32, heat: f64) -> FileScore {
