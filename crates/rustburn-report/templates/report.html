@@ -90,11 +90,6 @@ svg { display: block; flex-shrink: 0; }
   font-size: 20px; font-weight: 800; letter-spacing: 0.01em;
   color: var(--text-primary);
 }
-.logo-dot {
-  width: 11px; height: 11px; border-radius: 3px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--red) 100%);
-  box-shadow: 0 0 10px rgba(79, 140, 255, 0.45);
-}
 .sidebar-brand .subtitle { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
 .sidebar-brand .version {
   font-size: 11px; color: var(--text-muted); margin-top: 2px;
@@ -337,6 +332,18 @@ svg { display: block; flex-shrink: 0; }
 }
 .risk-table .path-cell svg { width: 13px; height: 13px; transition: transform 0.15s; opacity: 0.5; }
 .risk-table tbody tr.expanded .path-cell svg { transform: rotate(90deg); }
+.risk-table .file-detail-cell { padding: 12px 16px 14px 30px; background: var(--bg-card-hover); }
+.inline-detail { font-size: 12px; }
+.inline-detail-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.inline-detail-head .inline-path { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; word-break: break-all; }
+.inline-detail-head .inline-score { color: var(--text-secondary); white-space: nowrap; }
+.inline-dims { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 20px; }
+.inline-dim { display: flex; align-items: center; gap: 8px; }
+.inline-dim-label { width: 56px; color: var(--text-secondary); flex-shrink: 0; }
+.inline-dim-bar { flex: 1; height: 6px; background: var(--bg-deep); border-radius: 3px; overflow: hidden; }
+.inline-dim-fill { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.inline-dim-val { width: 30px; text-align: right; font-family: var(--font-mono); color: var(--text-primary); }
+.inline-dim-conf { width: 52px; text-align: right; font-size: 10.5px; color: var(--text-muted); }
 .risk-table .heat-score {
   font-weight: 600; font-variant-numeric: tabular-nums;
   display: inline-flex; align-items: center; gap: 6px;
@@ -743,7 +750,7 @@ svg { display: block; flex-shrink: 0; }
 <!-- ===== Sidebar ===== -->
 <aside class="sidebar">
   <div class="sidebar-brand">
-    <a class="logo" href="#overview"><span class="logo-dot"></span>rustburn</a>
+    <a class="logo" href="#overview">Rustburn</a>
     <div class="subtitle">代码技术债分析报告</div>
     <div class="version">v{{ report.rustburn_version }}</div>
   </div>
@@ -806,12 +813,12 @@ svg { display: block; flex-shrink: 0; }
   <div class="sidebar-section">
     <h3>报告说明</h3>
     <div class="sidebar-info-item" style="flex-direction:column;align-items:flex-start;gap:5px;padding:0;">
-      <span class="label">rustburn 通过三层计算公式评估代码技术债与潜在风险。分数越高，风险越大。数据来源可追溯，算法透明。</span>
+      <span class="label">Rustburn 通过五个维度（复杂度 / 重复代码 / 测试 / 变更风险 / 依赖）独立评分后加权合成评估代码技术债与潜在风险。分数越高，风险越大。数据来源可追溯，算法透明。</span>
     </div>
   </div>
 
   <div class="sidebar-footer">
-    rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：<a href="https://rustburn.dev" target="_blank" rel="noopener">https://rustburn.dev</a>
+    rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：<a href="https://github.com/tortb/rustburn" target="_blank" rel="noopener">https://github.com/tortb/rustburn</a>
   </div>
 </aside>
 
@@ -820,9 +827,9 @@ svg { display: block; flex-shrink: 0; }
 
 <!-- 关于这份报告（折叠说明，便于被分享时新读者快速理解） -->
 <details class="about-note">
-  <summary>关于这份报告：三层公式如何得出风险分？</summary>
+  <summary>关于这份报告：五个维度如何得出风险分？</summary>
   <div class="about-body">
-    rustburn 用三层公式评估代码技术债：<code>基础风险分</code>（复杂度 / 历史 / 依赖三个维度的仓库内百分位排名）&times; <code>趋势系数</code>（历史快照分数变化，&gt;1 放大风险、&lt;1 收窄；本版未启用，恒为 1.0）&rarr; <code>最终热力值</code>。分数越高，风险越大；所有中间值均可在此报告中追溯。
+    Rustburn 用五个维度独立评分评估代码技术债：<code>复杂度</code>（圈复杂度 / 嵌套深度）、<code>重复代码</code>（结构哈希判重）、<code>测试</code>（覆盖率 / 测试密度 / 断言密度）、<code>变更风险</code>（事故密度时间衰减）、<code>依赖</code>（CVSS / CVE 数量）。加权合成得到 <code>基础风险分</code>，再乘以 <code>趋势系数</code>（本版未启用，恒为 1.0）得到 <code>最终热力值</code>。分数越高，风险越大；所有中间值均可在此报告中追溯。
   </div>
 </details>
 
@@ -839,10 +846,10 @@ svg { display: block; flex-shrink: 0; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       导出 JSON
     </button>
-    <button class="btn" onclick="_rbShareReport()" title="分享报告">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
-      分享报告
-    </button>
+    <a class="btn" href="https://github.com/tortb/rustburn" target="_blank" rel="noopener" title="查看源码仓库">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      源码仓库
+    </a>
   </div>
 </div>
 
@@ -1128,7 +1135,7 @@ svg { display: block; flex-shrink: 0; }
                 </div>
 
                 <div class="detail-col">
-                  <div class="detail-section-title">三层公式计算过程</div>
+                  <div class="detail-section-title">五维度评分合成过程</div>
                   <div class="formula-wrap">
                     <button class="formula-toggle open" onclick="_rbToggleFormula(this)">
                       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
@@ -1224,8 +1231,8 @@ svg { display: block; flex-shrink: 0; }
         {% for file in report.files %}
         <tr>
           <td>
-            <div class="path-cell" data-filepath="{{ file.raw.path }}" onclick="_rbToggleFileDetail('{{ file.raw.path }}')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <div class="path-cell" data-filepath="{{ file.raw.path }}" onclick="_rbToggleFileRow('{{ file.raw.path }}', this)">
+              <svg class="cell-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
               <span>{{ file.raw.path }}</span>
             </div>
           </td>
@@ -1353,7 +1360,7 @@ svg { display: block; flex-shrink: 0; }
 </div>
 
 <div style="position:sticky;bottom:0;background:var(--bg-sidebar);border-top:1px solid var(--border-light);padding:8px 32px;text-align:center;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">
-  rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：https://rustburn.dev &nbsp;&nbsp;&nbsp; 报告生成时间：{{ report.scanned_at }}
+  Rustburn v{{ report.rustburn_version }} / 公式透明 &middot; 数据可验证 &middot; 缺陷分期 | 了解更多：<a href="https://github.com/tortb/rustburn" target="_blank" rel="noopener">https://github.com/tortb/rustburn</a> &nbsp;&nbsp;&nbsp; 报告生成时间：{{ report.scanned_at }}
 </div>
 
 <script>
@@ -1666,6 +1673,69 @@ const REPORT_DATA = {{report_data_json|safe}};
     ctx.fillText(top + '/' + total, cx, cy + 12);
   })();
 
+  // ========== 全部文件表格行内展开 ==========
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&#34;').replace(/'/g, '&#39;');
+  }
+  function fmt1(v) { return (typeof v === 'number' && isFinite(v)) ? v.toFixed(1) : '0.0'; }
+  function confTextOf(c) {
+    if (!c || !c.type) return '无数据';
+    if (c.type === 'Full') return '数据完整';
+    if (c.type === 'NotApplicable') return '不适用';
+    return '数据缺失';
+  }
+  var DIM_LABELS = ['复杂度', '重复代码', '测试', '变更风险', '依赖'];
+  function buildInlineDetail(f) {
+    var dims = f.dimensions || [];
+    var html = '<div class="inline-detail">';
+    html += '<div class="inline-detail-head"><span class="inline-path">' + escHtml(f.raw && f.raw.path ? f.raw.path : '') + '</span>';
+    html += '<span class="inline-score">基础风险 ' + fmt1(f.base_risk_score) + ' &rarr; 最终热力值 ' + fmt1(f.final_heat_score) + '</span></div>';
+    html += '<div class="inline-dims">';
+    for (var i = 0; i < 5; i++) {
+      var d = dims[i];
+      var risk = d ? d.risk_score : 0;
+      html += '<div class="inline-dim"><span class="inline-dim-label">' + DIM_LABELS[i] + '</span>'
+        + '<span class="inline-dim-bar"><span class="inline-dim-fill" style="width:' + Math.max(0, Math.min(100, Math.round(risk))) + '%"></span></span>'
+        + '<span class="inline-dim-val">' + fmt1(risk) + '</span>'
+        + '<span class="inline-dim-conf">' + confTextOf(d && d.confidence) + '</span></div>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+  function toggleFileRow(path, el) {
+    var tr = el.closest('tr');
+    if (!tr) return;
+    var existing = tr.nextElementSibling;
+    // 若该行已展开 → 收起
+    if (existing && existing.classList && existing.classList.contains('file-detail-row')) {
+      existing.remove();
+      tr.classList.remove('expanded');
+      return;
+    }
+    // 收起其他已展开的行
+    document.querySelectorAll('.risk-table tr.file-detail-row').forEach(function (r) { r.remove(); });
+    document.querySelectorAll('.risk-table tr.expanded').forEach(function (r) { r.classList.remove('expanded'); });
+    // 从 REPORT_DATA 查找该文件数据
+    var files = (typeof REPORT_DATA !== 'undefined' && REPORT_DATA.files) || [];
+    var f = null;
+    for (var i = 0; i < files.length; i++) {
+      if (files[i].raw && files[i].raw.path === path) { f = files[i]; break; }
+    }
+    if (!f) return;
+    var td = document.createElement('td');
+    td.colSpan = 7;
+    td.className = 'file-detail-cell';
+    td.innerHTML = buildInlineDetail(f);
+    var row = document.createElement('tr');
+    row.className = 'file-detail-row';
+    row.appendChild(td);
+    tr.parentNode.insertBefore(row, tr.nextSibling);
+    tr.classList.add('expanded');
+  }
+  window._rbToggleFileRow = toggleFileRow;
+
   // ========== File Detail Toggle (风险卡片) + Tabs ==========
   function toggleFileDetail(path) {
     var card = document.querySelector('.risk-card[data-filepath="' + path + '"]');
@@ -1944,21 +2014,6 @@ const REPORT_DATA = {{report_data_json|safe}};
     }
   }
   window._rbExportJSON = exportJSON;
-
-  // ========== Share ==========
-  function shareReport() {
-    var url = window.location.href;
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url).then(function () {
-        showToast('链接已复制到剪贴板');
-      }).catch(function () {
-        showToast('复制失败');
-      });
-    } else {
-      showToast('当前环境不支持复制');
-    }
-  }
-  window._rbShareReport = shareReport;
 })();
 </script>
 </body>
