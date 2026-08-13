@@ -172,6 +172,17 @@ case ":$PATH:" in
     *":$HOME/.local/bin:"*) IN_PATH=true ;;
 esac
 
+detect_shell() {
+    case "$(basename "$SHELL" 2>/dev/null)" in
+        zsh)  echo "zsh" ;;
+        bash) echo "bash" ;;
+        fish) echo "fish" ;;
+        *)    echo "sh" ;;
+    esac
+}
+
+SHELL_TYPE=$(detect_shell)
+
 echo ""
 echo "rustburn $VERSION installed successfully."
 if [ "$IN_PATH" = true ]; then
@@ -183,4 +194,24 @@ else
     echo "~/.local/bin is not in PATH."
     echo "Add ~/.local/bin to your PATH, then run:"
     echo "  rb"
+    echo ""
+    echo "For your shell ($SHELL_TYPE), run:"
+    echo ""
+    case "$SHELL_TYPE" in
+        zsh)
+            echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+            echo "  source ~/.zshrc"
+            ;;
+        bash)
+            echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+            echo "  source ~/.bashrc"
+            ;;
+        fish)
+            echo "  fish_add_path ~/.local/bin"
+            ;;
+        *)
+            echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+            echo "  source ~/.profile"
+            ;;
+    esac
 fi
