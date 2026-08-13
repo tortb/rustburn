@@ -94,10 +94,32 @@ out/
 /// 如果 .rbignore 不存在，自动创建包含默认规则的模板文件。
 fn ensure_rbignore(repo_path: &Path) {
     let path = repo_path.join(".rbignore");
-    if !path.exists() {
-        if fs::write(&path, RBIGNORE_TEMPLATE).is_ok() {
-            eprintln!("Created .rbignore with default exclusions (target/, dist/, out/).");
-        }
+    let rbignore_path = path.display().to_string();
+
+    if path.exists() {
+        eprintln!(
+            "[{}] .rbignore already exists at {}, skipping template creation.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            rbignore_path
+        );
+        return;
+    }
+
+    eprintln!(
+        "[{}] .rbignore not found, creating default template at {}",
+        Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        rbignore_path
+    );
+    match fs::write(&path, RBIGNORE_TEMPLATE) {
+        Ok(()) => eprintln!(
+            "[{}] Created .rbignore with default exclusions (target/, dist/, out/).",
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+        Err(e) => eprintln!(
+            "[{}] Failed to create .rbignore: {}",
+            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            e
+        ),
     }
 }
 
