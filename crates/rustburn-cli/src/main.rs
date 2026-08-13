@@ -49,6 +49,10 @@ struct Cli {
     #[arg(long, global = true)]
     ignore: Vec<String>,
 
+    /// 包含生成的产物路径（target/、node_modules/、dist/、build/、*.generated.*），默认排除
+    #[arg(long, global = true)]
+    include_generated: bool,
+
     /// 超过该分数时返回 exit code 1
     #[arg(long, global = true)]
     fail_above: Option<f64>,
@@ -85,11 +89,15 @@ const RBIGNORE_TEMPLATE: &str = "\
 # rustburn ignore rules (gitignore-style).
 # Edit this file to exclude files and directories from scanning.
 #
-# Default exclusions:
-target/
-dist/
-out/
+# 注意：生成产物目录（target/、node_modules/、dist/、build/、*.generated.*）
+# 由内置默认规则排除，无需在此重复；如需包含它们，请使用 --include-generated。
 ";
+
+/// 强制默认排除的路径模式（gitignore 风格）。
+///
+/// 无论仓库是否有 .gitignore，只要未开启 --include-generated 都会生效。
+const FORCED_IGNORE_PATTERNS: &[&str] =
+    &["target", "node_modules", "dist", "build", "*.generated.*"];
 
 /// 如果 .rbignore 不存在，自动创建包含默认规则的模板文件。
 fn ensure_rbignore(repo_path: &Path) {
@@ -112,7 +120,7 @@ fn ensure_rbignore(repo_path: &Path) {
     );
     match fs::write(&path, RBIGNORE_TEMPLATE) {
         Ok(()) => eprintln!(
-            "[{}] Created .rbignore with default exclusions (target/, dist/, out/).",
+            "[{}] Created .rbignore with default exclusions.",
             Utc::now().format("%Y-%m-%d %H:%M:%S")
         ),
         Err(e) => eprintln!(
@@ -123,112 +131,95 @@ fn ensure_rbignore(repo_path: &Path) {
     }
 }
 
-/// 读取 .rbignore（gitignore 风格），返回忽略模式列表。
-fn read_rbignore(repo_path: &Path) -> Vec<String> {
-    let content = match fs::read_to_string(repo_path.join(".rbignore")) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    content
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.trim_end_matches('/').to_string())
-        .collect()
-}
-
-/// 判断相对路径是否被忽略（gitignore 风格：路径前缀 / 目录段 / glob 后缀）。
-fn is_ignored(relative: &str, patterns: &[String]) -> bool {
-    let segments: Vec<&str> = relative.split('/').collect();
-    patterns.iter().any(|p| {
-        if relative == p || relative.starts_with(&format!("{}/", p)) {
-            return true;
-        }
-        if segments.contains(&p.as_str()) {
-            return true;
-        }
-        if let Some(suffix) = p.strip_prefix('*') {
-            if segments.last().is_some_and(|s| s.ends_with(suffix)) {
-                return true;
-            }
-        }
-        false
-    })
-}
-
-/// 扫描仓库中的文件（不跟随符号链接，遵守 .rbignore / --ignore 合并规则）。
+/// 扫描仓库中的文件。
+///
+/// 使用 `ignore` crate 的 walker，自动读取并遵守：
+/// - 仓库的 .gitignore（git_ignore）
+/// - 全局 gitignore 与 .git/info/exclude（git_global / git_exclude）
+/// - .ignore 文件
+/// - 自定义 .rbignore（add_custom_ignore_filename）
+///
+/// 同时：
+/// - 不跟随符号链接（follow_links(false)）；
+/// - 不进入隐藏目录（hidden(true)，包含 .git）；
+/// - 未开启 --include-generated 时，强制排除
+///   target/ node_modules/ dist/ build/ *.generated.*；
+/// - `--ignore` 传入的模式以 gitignore 黑名单形式合并生效。
 fn scan_files(
     repo_path: &Path,
-    ignore_patterns: &[String],
+    cli_ignore_patterns: &[String],
+    include_generated: bool,
 ) -> anyhow::Result<(Vec<ScannedFile>, ScanStats)> {
+    // 构建 override 规则：`!` 前缀表示黑名单（仅排除匹配项），未匹配的文件照常扫描。
+    let mut override_builder = ignore::overrides::OverrideBuilder::new(repo_path);
+    if !include_generated {
+        for pattern in FORCED_IGNORE_PATTERNS {
+            override_builder.add(&format!("!{}", pattern))?;
+        }
+    }
+    for pattern in cli_ignore_patterns {
+        override_builder.add(&format!("!{}", pattern))?;
+    }
+    let overrides = override_builder.build()?;
+
+    let mut walker = ignore::WalkBuilder::new(repo_path);
+    walker
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .follow_links(false)
+        .overrides(overrides)
+        .add_custom_ignore_filename(".rbignore");
+
     let mut files = Vec::new();
     let mut stats = ScanStats {
         skipped_symlinks: 0,
         skipped_files: 0,
     };
 
-    fn scan_dir(
-        dir: &Path,
-        base: &Path,
-        files: &mut Vec<ScannedFile>,
-        stats: &mut ScanStats,
-        ignore: &[String],
-    ) -> anyhow::Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let file_type = entry.file_type()?;
+    for result in walker.build() {
+        let entry = result?;
+        let path = entry.path();
 
-            if file_type.is_symlink() {
+        // 跳过符号链接与目录（不进入）
+        match entry.file_type() {
+            Some(ft) if ft.is_symlink() => {
                 stats.skipped_symlinks += 1;
                 continue;
             }
-            if file_type.is_dir() {
-                scan_dir(&path, base, files, stats, ignore)?;
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let relative = path.strip_prefix(base).unwrap_or(&path);
-            let relative_str = relative.to_string_lossy().replace('\\', "/");
-
-            if is_ignored(&relative_str, ignore) {
-                continue;
-            }
-
-            let lang = detect_language(&relative_str);
-            if lang == Language::Unknown {
-                continue;
-            }
-
-            // 超过大小限制的文件跳过
-            if entry.metadata()?.len() > MAX_FILE_SIZE {
-                stats.skipped_files += 1;
-                continue;
-            }
-
-            // 二进制 / 无法 UTF-8 解码的文件跳过
-            match fs::read_to_string(&path) {
-                Ok(source) => files.push(ScannedFile {
-                    path: relative_str,
-                    language: lang,
-                    source,
-                }),
-                Err(_) => stats.skipped_files += 1,
-            }
+            Some(ft) if !ft.is_file() => continue,
+            _ => {}
         }
-        Ok(())
+
+        let relative = path.strip_prefix(repo_path).unwrap_or(path);
+        let relative_str = relative.to_string_lossy().replace('\\', "/");
+
+        let lang = detect_language(&relative_str);
+        if lang == Language::Unknown {
+            continue;
+        }
+
+        // 超过大小限制的文件跳过
+        let file_len = entry.metadata()?.len();
+        if file_len > MAX_FILE_SIZE {
+            stats.skipped_files += 1;
+            continue;
+        }
+
+        // 二进制 / 无法 UTF-8 解码的文件跳过
+        match fs::read_to_string(path) {
+            Ok(source) => files.push(ScannedFile {
+                path: relative_str,
+                language: lang,
+                source,
+            }),
+            Err(_) => stats.skipped_files += 1,
+        }
     }
 
-    scan_dir(
-        repo_path,
-        repo_path,
-        &mut files,
-        &mut stats,
-        ignore_patterns,
-    )?;
     Ok((files, stats))
 }
 
@@ -290,13 +281,8 @@ fn run() -> Result<(f64, Option<f64>), String> {
 
     // Phase 2: 扫描文件并分析复杂度
     ensure_rbignore(repo_path);
-    let ignore_patterns = {
-        let mut patterns = read_rbignore(repo_path);
-        patterns.extend(cli.ignore.iter().cloned());
-        patterns
-    };
     let (scanned_files, scan_stats) =
-        scan_files(repo_path, &ignore_patterns).map_err(|e| e.to_string())?;
+        scan_files(repo_path, &cli.ignore, cli.include_generated).map_err(|e| e.to_string())?;
 
     // Phase 3: 依赖分析
     let dep_analysis = analyze_dependencies(repo_path, cli.offline).map_err(|e| e.to_string())?;
@@ -310,6 +296,16 @@ fn run() -> Result<(f64, Option<f64>), String> {
                 .to_string(),
         );
     }
+    if cli.include_generated {
+        warnings.push(
+            "--include-generated enabled: generated artifacts (target/, node_modules/, dist/, build/, *.generated.*) are included in the scan."
+                .to_string(),
+        );
+    }
+    warnings.push(
+        "Trend analysis is not enabled in this version: no historical snapshots are collected, trend_coefficient is fixed at 1.0."
+            .to_string(),
+    );
     if history_truncated {
         warnings.push(format!(
             "History analysis limited to the latest {} commits.",

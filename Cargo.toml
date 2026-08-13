@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
@@ -30,3 +30,5 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 insta = "1"
 tempfile = "3"
+# 文件过滤：读取并遵守 .gitignore/.ignore/.rbignore，替代手写过滤逻辑
+ignore = "0.4"

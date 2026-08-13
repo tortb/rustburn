@@ -22,7 +22,7 @@ pub fn calculate_dimension_values(
     max_incident_count: u32,
     max_cve_count: u32,
 ) -> DimensionValues {
-    DimensionValues {
+    let values = DimensionValues {
         complexity_value: calculate_complexity_value(metrics),
         history_value: calculate_history_value(
             metrics,
@@ -31,7 +31,28 @@ pub fn calculate_dimension_values(
             max_incident_count,
         ),
         dependency_value: calculate_dependency_value(metrics, max_cve_count),
+    };
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "dimension_values path={} C={:.3} H={:.3} D={:.3} (raw: cc={} depth={} avg_len={:.1} commits={} authors={} incidents={} recency_days={} severity={} cves={})",
+            metrics.path,
+            values.complexity_value,
+            values.history_value,
+            values.dependency_value,
+            metrics.cyclomatic_complexity,
+            metrics.max_if_nesting_depth,
+            metrics.avg_function_length,
+            metrics.commit_count,
+            metrics.distinct_authors,
+            metrics.incident_commit_count,
+            metrics.last_modified_days_ago,
+            metrics.max_cve_severity,
+            metrics.cve_count,
+        ));
     }
+
+    values
 }
 
 /// 复杂度维度综合值（spec §68）。
@@ -134,27 +155,54 @@ pub fn calculate_percentile_scores(
     let current_history = current.history_value;
     let current_dependency = current.dependency_value;
 
-    FilePercentileScores {
+    let scores = FilePercentileScores {
         complexity_risk: calculate_percentile(current_complexity, &complexity_values),
         history_risk: calculate_percentile(current_history, &history_values),
         dependency_risk: calculate_percentile(current_dependency, &dependency_values),
+    };
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "percentile_scores n={} current=(C={:.3} H={:.3} D={:.3}) -> pC={:.2} pH={:.2} pD={:.2} (C pool {} | H pool {} | D pool {})",
+            all_dimension_values.len(),
+            current_complexity,
+            current_history,
+            current_dependency,
+            scores.complexity_risk,
+            scores.history_risk,
+            scores.dependency_risk,
+            format_f64s(&complexity_values),
+            format_f64s(&history_values),
+            format_f64s(&dependency_values),
+        ));
     }
+
+    scores
+}
+
+/// 将 f64 集合格式化为紧凑字符串（供 RB_DEBUG 日志使用）。
+fn format_f64s(values: &[f64]) -> String {
+    values
+        .iter()
+        .map(|v| format!("{:.2}", v))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// 计算单个值的 percentile。
 ///
-/// 根据 spec §71：
-/// - 升序排序
-/// - 相同值取最后位置
-/// - r 从 1 开始
-/// - percentile = r / file_count * 100
+/// - 升序排序；
+/// - 相同值获得相同 rank，取**最小** rank（第一个出现的位置）。
+///   这样大量相同低值（例如依赖风险普遍为 0）不会被互相抬高，
+///   低风险值落在低百分位、最大值始终落在 100 分位；
+/// - percentile = r / file_count * 100，r 从 1 开始。
 fn calculate_percentile(value: f64, all_values: &[f64]) -> f64 {
     if all_values.is_empty() {
         return 50.0;
     }
 
     // 所有值相同：该维度无法区分文件，返回中性 50
-    // （与单文件仓库同理，避免无区分度的维度被顶到 100 分位后拉满 base_risk）
+    // （避免无区分度的维度被顶到 100 分位后拉满 base_risk）
     if all_values.iter().all(|v| *v == all_values[0]) {
         return 50.0;
     }
@@ -162,16 +210,18 @@ fn calculate_percentile(value: f64, all_values: &[f64]) -> f64 {
     let mut sorted = all_values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 找到 value 在排序数组中的最后位置（r 从 1 开始）
+    // 找到 value 在排序数组中的最小 rank（第一个 >= value 的位置，r 从 1 开始）
     let mut r = 0;
     for (i, &v) in sorted.iter().enumerate() {
-        if v <= value {
-            r = i + 1; // r 从 1 开始
+        if v >= value {
+            r = i + 1;
+            break;
         }
     }
 
     if r == 0 {
-        return 0.0;
+        // value 大于所有值
+        r = sorted.len();
     }
 
     let percentile = (r as f64 / sorted.len() as f64) * 100.0;
@@ -180,19 +230,56 @@ fn calculate_percentile(value: f64, all_values: &[f64]) -> f64 {
 
 /// 计算基础风险分数。
 ///
-/// 根据 spec §72：
-/// base_risk_score = 100 - cbrt((100 - complexity_risk_pct) * (100 - history_risk_pct) * (100 - dependency_risk_pct))
-/// clamp(base_risk_score, 0, 100)
+/// 采用「加权算术平均 + 高风险维度惩罚」：
+///
+/// ```text
+/// base_risk = w1*c + w2*h + w3*d + extra_penalty(max(c,h,d))
+/// ```
+///
+/// - 权重：复杂度 60%、历史 30%、依赖 10%（与报告 UI 展示一致）；
+/// - `extra_penalty` 仅在某一维度**显著超过**其余两维度均值时追加
+///   （max > 50 且 max > mean_of_others * 1.25），幅度为
+///   `(max - mean_of_others) * 0.15`；
+/// - 因此单一维度为 100 分位时，总分**不会被封顶到 100**，
+///   其余两个维度的实际值仍然有效影响结果。
 pub fn calculate_base_risk_score(percentiles: &FilePercentileScores) -> f64 {
-    let complexity_risk_pct = percentiles.complexity_risk;
-    let history_risk_pct = percentiles.history_risk;
-    let dependency_risk_pct = percentiles.dependency_risk;
+    const W_COMPLEXITY: f64 = 0.6;
+    const W_HISTORY: f64 = 0.3;
+    const W_DEPENDENCY: f64 = 0.1;
 
-    let product =
-        (100.0 - complexity_risk_pct) * (100.0 - history_risk_pct) * (100.0 - dependency_risk_pct);
+    let c = percentiles.complexity_risk;
+    let h = percentiles.history_risk;
+    let d = percentiles.dependency_risk;
 
-    let base_risk = 100.0 - product.cbrt();
-    base_risk.clamp(0.0, 100.0)
+    let base = W_COMPLEXITY * c + W_HISTORY * h + W_DEPENDENCY * d;
+    let extra = extra_penalty(c, h, d);
+    let result = (base + extra).clamp(0.0, 100.0);
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "base_risk pC={:.2} pH={:.2} pD={:.2} weighted={:.3} extra_penalty={:.3} -> base_risk={:.3}",
+            c, h, d, base, extra, result
+        ));
+    }
+
+    result
+}
+
+/// 高风险维度惩罚。
+///
+/// 仅当最大值显著偏离其余两个维度均值时才追加惩罚，避免
+/// 单一维度 100 分直接决定总分、也避免平庸文件被无意义放大。
+fn extra_penalty(c: f64, h: f64, d: f64) -> f64 {
+    let dims = [c, h, d];
+    let max_dim = dims.iter().copied().fold(f64::MIN, f64::max);
+    let mean_of_others = (c + h + d - max_dim) / 2.0;
+
+    // 显著偏离阈值：最大维度超过其余均值 25% 以上，且本身超过中性值 50
+    if max_dim > 50.0 && max_dim > mean_of_others * 1.25 {
+        (max_dim - mean_of_others) * 0.15
+    } else {
+        0.0
+    }
 }
 
 /// 计算一致性系数。
@@ -239,6 +326,11 @@ pub fn calculate_consistency_coefficient(
 /// 如果没有足够有效历史 snapshot，返回 1.0
 pub fn calculate_trend_coefficient(snapshots: &[HistoricalSnapshot]) -> f64 {
     if snapshots.is_empty() {
+        if crate::debug_enabled() {
+            crate::debug_log(format_args!(
+                "trend_coefficient snapshots=0 -> 1.0 (trend analysis not enabled)"
+            ));
+        }
         return 1.0;
     }
 
@@ -259,7 +351,20 @@ pub fn calculate_trend_coefficient(snapshots: &[HistoricalSnapshot]) -> f64 {
     let trend_coefficient = 1.0 - trend_delta * 0.3;
 
     // 限制在理论范围内
-    trend_coefficient.clamp(0.91, 1.09)
+    let result = trend_coefficient.clamp(0.91, 1.09);
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "trend_coefficient snapshots={} historical_mean={:.3} current={:.3} delta={:.3} -> {:.3}",
+            snapshots.len(),
+            historical_mean,
+            current,
+            trend_delta,
+            result
+        ));
+    }
+
+    result
 }
 
 /// 计算最终热度分数。
@@ -432,6 +537,132 @@ mod tests {
     }
 
     #[test]
+    fn test_percentile_dependency_zero_ranks_low() {
+        // 回归验收：构造 10 个文件，9 个依赖风险为 0、1 个为 80。
+        // 依赖风险 0 必须落在低百分位，且显著低于依赖风险 80 的文件。
+        // （旧实现“同值取最后位置”会让 9 个 0 值互相抬高到 90 分位。）
+        let zero = DimensionValues {
+            complexity_value: 10.0,
+            history_value: 10.0,
+            dependency_value: 0.0,
+        };
+        let high = DimensionValues {
+            complexity_value: 10.0,
+            history_value: 10.0,
+            dependency_value: 80.0,
+        };
+
+        let mut all = vec![zero.clone(); 9];
+        all.push(high.clone());
+
+        let zero_p = calculate_percentile_scores(&zero, &all);
+        let high_p = calculate_percentile_scores(&high, &all);
+
+        assert!(
+            zero_p.dependency_risk < 50.0,
+            "依赖风险 0 应处于低百分位，实际 {}",
+            zero_p.dependency_risk
+        );
+        assert!(high_p.dependency_risk >= 90.0);
+        assert!(
+            zero_p.dependency_risk < high_p.dependency_risk,
+            "依赖风险 0 的百分位应显著低于依赖风险 80 的文件"
+        );
+    }
+
+    #[test]
+    fn test_percentile_all_values_equal_returns_neutral() {
+        // 多文件但某维度所有值相同：该维度无法区分文件，返回中性 50
+        let v = DimensionValues {
+            complexity_value: 20.0,
+            history_value: 30.0,
+            dependency_value: 0.0,
+        };
+        let all = vec![v.clone(), v.clone(), v.clone()];
+        let p = calculate_percentile_scores(&v, &all);
+        assert_eq!(p.complexity_risk, 50.0);
+        assert_eq!(p.history_risk, 50.0);
+        assert_eq!(p.dependency_risk, 50.0);
+    }
+
+    #[test]
+    fn test_percentile_empty_and_extreme_positions() {
+        // 空集合 → 中性 50
+        assert_eq!(calculate_percentile(10.0, &[]), 50.0);
+
+        let vals = vec![10.0, 20.0, 30.0, 40.0];
+        // 低于所有值 → 最小 rank（1/4）
+        assert!((calculate_percentile(5.0, &vals) - 25.0).abs() < 1e-9);
+        // 高于所有值 → 100 分位
+        assert!((calculate_percentile(99.0, &vals) - 100.0).abs() < 1e-9);
+        // 恰为最小值 → 1/4
+        assert!((calculate_percentile(10.0, &vals) - 25.0).abs() < 1e-9);
+        // 恰为最大值 → 100 分位
+        assert!((calculate_percentile(40.0, &vals) - 100.0).abs() < 1e-9);
+        // 介于中间 → 严格递增
+        assert!((calculate_percentile(25.0, &vals) - 75.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_percentile_ties_share_min_rank() {
+        // 同值取最小 rank：低值平局不被抬高、高值平局共享较低分位
+        let vals = vec![0.0, 0.0, 80.0, 80.0];
+        // 0：第一个 >=0 的位置 0 → rank 1 → 25%
+        assert!((calculate_percentile(0.0, &vals) - 25.0).abs() < 1e-9);
+        // 80：第一个 >=80 的位置 2 → rank 3 → 75%（不独占 100）
+        assert!((calculate_percentile(80.0, &vals) - 75.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_base_risk_boundary_and_clamp() {
+        // max == 50 未超过阈值 → 不触发惩罚：weighted = 30+12+3 = 45
+        let b = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: 50.0,
+            history_risk: 40.0,
+            dependency_risk: 30.0,
+        });
+        assert!((b - 45.0).abs() < 1e-9);
+
+        // 三个维度均为 0 → 0；均为 100 → 100
+        let zero = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: 0.0,
+            history_risk: 0.0,
+            dependency_risk: 0.0,
+        });
+        let full = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: 100.0,
+            history_risk: 100.0,
+            dependency_risk: 100.0,
+        });
+        assert_eq!(zero, 0.0);
+        assert_eq!(full, 100.0);
+
+        // (100,100,50)：weighted=95，max=100 > mean_of_others(75)*1.25=93.75
+        // → 惩罚 (100-75)*0.15=3.75 → 98.75，且必须 < 100
+        let mix = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: 100.0,
+            history_risk: 100.0,
+            dependency_risk: 50.0,
+        });
+        assert!((mix - 98.75).abs() < 1e-9, "mix={}", mix);
+        assert!(mix < 100.0);
+
+        // 负值 / 超大值 clamp 到 [0, 100]
+        let neg = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: -10.0,
+            history_risk: -10.0,
+            dependency_risk: -10.0,
+        });
+        let over = calculate_base_risk_score(&FilePercentileScores {
+            complexity_risk: 200.0,
+            history_risk: 200.0,
+            dependency_risk: 200.0,
+        });
+        assert_eq!(neg, 0.0);
+        assert_eq!(over, 100.0);
+    }
+
+    #[test]
     fn test_base_risk_score() {
         let percentiles = FilePercentileScores {
             complexity_risk: 50.0,
@@ -441,15 +672,14 @@ mod tests {
 
         let base_risk = calculate_base_risk_score(&percentiles);
 
-        // base_risk = 100 - cbrt((100-50) * (100-50) * (100-50))
-        //           = 100 - cbrt(50 * 50 * 50)
-        //           = 100 - cbrt(125000)
-        //           = 100 - 50 = 50
+        // base_risk = 0.6*50 + 0.3*50 + 0.1*50 = 50（无惩罚，max 未超过 50）
         assert!((base_risk - 50.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_base_risk_score_extreme() {
+    fn test_base_risk_single_dimension_100_not_capped() {
+        // 旧公式缺陷：任一维度为 100 时总分被 cbrt(0) 封顶到 100。
+        // 新公式：单一 100 只按权重贡献 + 少量惩罚，总分必须 < 100。
         let percentiles = FilePercentileScores {
             complexity_risk: 100.0,
             history_risk: 0.0,
@@ -458,9 +688,56 @@ mod tests {
 
         let base_risk = calculate_base_risk_score(&percentiles);
 
-        // base_risk = 100 - cbrt((100-100) * (100-0) * (100-0))
-        //           = 100 - cbrt(0) = 100
-        assert!((base_risk - 100.0).abs() < 0.01);
+        // base = 0.6*100 = 60
+        // extra = (100 - 0) * 0.15 = 15（max=100 > 50 且 > 0*1.25）
+        // total = 75
+        assert!(
+            (base_risk - 75.0).abs() < 0.01,
+            "单一维度 100 不应封顶总分，实际 {}",
+            base_risk
+        );
+        assert!(base_risk < 100.0);
+    }
+
+    #[test]
+    fn test_base_risk_single_bad_dimension_vs_all_bad() {
+        // 回归验收：只有 1 个维度差（90+）的文件，
+        // 最终分数不应等同于三个维度都很差的文件。
+        let single_bad = FilePercentileScores {
+            complexity_risk: 5.0,
+            history_risk: 5.0,
+            dependency_risk: 95.0,
+        };
+        let all_bad = FilePercentileScores {
+            complexity_risk: 95.0,
+            history_risk: 95.0,
+            dependency_risk: 95.0,
+        };
+
+        let score_single = calculate_base_risk_score(&single_bad);
+        let score_all = calculate_base_risk_score(&all_bad);
+
+        // single_bad: base = 0.6*5+0.3*5+0.1*95 = 14；extra = (95-5)*0.15 = 13.5 → 27.5
+        // all_bad:    base = 95；extra = 0（max 未超过其余均值 1.25 倍）→ 95
+        assert!(
+            score_all > score_single + 10.0,
+            "单一维度差(={:.1})不应与三维度都差(={:.1})得分相当",
+            score_single,
+            score_all
+        );
+    }
+
+    #[test]
+    fn test_base_risk_penalty_only_on_significant_imbalance() {
+        // 三个维度接近均衡时不应追加惩罚
+        let balanced = FilePercentileScores {
+            complexity_risk: 80.0,
+            history_risk: 70.0,
+            dependency_risk: 60.0,
+        };
+        let score = calculate_base_risk_score(&balanced);
+        // base = 48+21+6 = 75；max=80，mean_of_others=65，80 > 65*1.25=81.25 不成立 → 无惩罚
+        assert!((score - 75.0).abs() < 0.01);
     }
 
     #[test]

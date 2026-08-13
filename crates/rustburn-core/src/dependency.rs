@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::model::DependencyFinding;
+use crate::model::{DependencyFinding, Severity};
 
 #[derive(Error, Debug)]
 pub enum DependencyError {
@@ -170,7 +170,8 @@ struct OsvPackage {
 /// OSV API 响应结构
 #[derive(Debug, Deserialize)]
 struct OsvResponse {
-    results: Vec<OsvResult>,
+    /// 与查询一一对应的结果；单条查询失败时 OSV 可能返回 null
+    results: Vec<Option<OsvResult>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,10 +233,27 @@ pub fn query_osv(deps: &[Dependency]) -> Result<Vec<DependencyFinding>, Dependen
                 let osv_response: OsvResponse = serde_json::from_str(&body)
                     .map_err(|e| DependencyError::Parse(e.to_string()))?;
 
-                let findings = process_osv_response(&osv_response, deps);
+                let mut findings = process_osv_response(&osv_response, deps);
+
+                if crate::debug_enabled() {
+                    crate::debug_log(format_args!(
+                        "osv_querybatch status=success queries={} response_bytes={} raw_findings={}",
+                        request.queries.len(),
+                        body.len(),
+                        findings.len()
+                    ));
+                }
+
+                enrich_findings(&mut findings);
                 return Ok(findings);
             }
             Err(e) => {
+                if crate::debug_enabled() {
+                    crate::debug_log(format_args!(
+                        "osv_querybatch attempt={}/{} failed: {}",
+                        attempts, max_attempts, e
+                    ));
+                }
                 if attempts >= max_attempts {
                     return Err(DependencyError::Http(e.to_string()));
                 }
@@ -246,11 +264,139 @@ pub fn query_osv(deps: &[Dependency]) -> Result<Vec<DependencyFinding>, Dependen
     }
 }
 
+/// OSV 单条漏洞详情响应（GET /v1/vulns/{id}）。
+///
+/// querybatch 接口出于体积考虑**只返回 id 与 modified**，
+/// summary / 详情 / 严重度必须通过单条接口二次获取。
+#[derive(Debug, Deserialize)]
+struct OsvVulnDetail {
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    database_specific: Option<serde_json::Value>,
+}
+
+/// 补全漏洞摘要与真实严重度。
+///
+/// 对批量查询结果中每个去重后的漏洞 id 再发一次
+/// `GET https://api.osv.dev/v1/vulns/{id}`，用官方返回的 summary 填充报告，
+/// 避免报告中出现 ID 真实但摘要为空的记录。
+/// 单个详情请求失败时保留批量结果（summary 为空、严重度标记为估算）。
+fn enrich_findings(findings: &mut [DependencyFinding]) {
+    use std::collections::{HashMap, HashSet};
+
+    if findings.is_empty() {
+        return;
+    }
+
+    let client = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    // 收集去重后的漏洞 id
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+    for f in findings.iter() {
+        if seen.insert(f.id.clone()) {
+            ids.push(f.id.clone());
+        }
+    }
+
+    let mut details: HashMap<String, OsvVulnDetail> = HashMap::new();
+    let mut fetched_ok = 0usize;
+    let mut fetched_fail = 0usize;
+    for id in &ids {
+        match client
+            .get(&format!("https://api.osv.dev/v1/vulns/{}", id))
+            .call()
+        {
+            Ok(resp) => match resp.into_string() {
+                Ok(body) => {
+                    if let Ok(detail) = serde_json::from_str::<OsvVulnDetail>(&body) {
+                        details.insert(id.to_string(), detail);
+                        fetched_ok += 1;
+                    } else {
+                        fetched_fail += 1;
+                    }
+                }
+                Err(_) => fetched_fail += 1,
+            },
+            Err(_) => fetched_fail += 1,
+        }
+    }
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "osv_vuln_details unique_ids={} fetched_ok={} fetched_fail={}",
+            ids.len(),
+            fetched_ok,
+            fetched_fail
+        ));
+    }
+
+    for f in findings.iter_mut() {
+        let Some(detail) = details.get(&f.id) else {
+            continue;
+        };
+
+        // 填充真实摘要（批量接口不返回）
+        if let Some(summary) = &detail.summary {
+            if !summary.trim().is_empty() {
+                f.summary = summary.clone();
+            }
+        }
+
+        // 用真实严重度覆盖估算值（无 CVSS / severity 时保持估算标记）
+        if let Some((severity, estimated)) = compute_detail_severity(&detail.database_specific) {
+            f.severity = severity;
+            f.severity_estimated = estimated;
+        }
+
+        if crate::debug_enabled() {
+            crate::debug_log(format_args!(
+                "osv_vuln_enriched id={} summary_len={} severity={} severity_estimated={}",
+                f.id,
+                f.summary.len(),
+                f.severity,
+                f.severity_estimated
+            ));
+        }
+    }
+}
+
+/// 从漏洞详情中计算严重度。
+///
+/// 优先使用 CVSS 分数；其次使用 GitHub advisory 的
+/// `database_specific.severity`（LOW/MEDIUM/HIGH/CRITICAL）。
+fn compute_detail_severity(
+    database_specific: &Option<serde_json::Value>,
+) -> Option<(Severity, bool)> {
+    if let Some(score) = extract_cvss_score(database_specific) {
+        return Some(crate::model::cvss_to_severity(Some(score)));
+    }
+
+    let db = database_specific.as_ref()?;
+    let level = db.get("severity").and_then(|v| v.as_str())?;
+    let severity = match level.to_ascii_uppercase().as_str() {
+        "LOW" => Severity::Low,
+        "MEDIUM" => Severity::Medium,
+        "HIGH" => Severity::High,
+        "CRITICAL" => Severity::Critical,
+        _ => return None,
+    };
+    Some((severity, false))
+}
+
 /// 处理 OSV 响应
 fn process_osv_response(response: &OsvResponse, deps: &[Dependency]) -> Vec<DependencyFinding> {
     let mut findings = Vec::new();
 
     for (i, result) in response.results.iter().enumerate() {
+        // 跳过 OSV 对单条查询失败返回的 null 结果，以及结果数多于查询数的异常情况
+        let (Some(result), Some(dep)) = (result.as_ref(), deps.get(i)) else {
+            continue;
+        };
+
         if let Some(vulns) = &result.vulns {
             for vuln in vulns {
                 // 提取 CVSS 分数
@@ -259,9 +405,9 @@ fn process_osv_response(response: &OsvResponse, deps: &[Dependency]) -> Vec<Depe
 
                 findings.push(DependencyFinding {
                     id: vuln.id.clone(),
-                    package_name: deps[i].name.clone(),
-                    ecosystem: deps[i].ecosystem.clone(),
-                    version: deps[i].version.clone(),
+                    package_name: dep.name.clone(),
+                    ecosystem: dep.ecosystem.clone(),
+                    version: dep.version.clone(),
                     severity,
                     severity_estimated,
                     summary: vuln.summary.clone().unwrap_or_default(),
@@ -711,5 +857,158 @@ const local = require('./local');
         let score = extract_cvss_score(&db);
         // 简化实现可能无法正确解析，但至少不应该 panic
         let _ = score;
+    }
+
+    #[test]
+    fn test_process_osv_response_skips_null_and_missing() {
+        // 构造含 null 结果、结果数少于查询数、summary 为空的响应
+        let response = OsvResponse {
+            results: vec![
+                None,
+                Some(OsvResult {
+                    vulns: Some(vec![OsvVuln {
+                        id: "RUSTSEC-0000-0001".to_string(),
+                        summary: Some("real summary".to_string()),
+                        database_specific: None,
+                    }]),
+                }),
+            ],
+        };
+        let deps = vec![
+            Dependency {
+                name: "pkg-a".to_string(),
+                version: "1.0.0".to_string(),
+                ecosystem: "crates.io".to_string(),
+            },
+            Dependency {
+                name: "pkg-b".to_string(),
+                version: "2.0.0".to_string(),
+                ecosystem: "crates.io".to_string(),
+            },
+        ];
+
+        let findings = process_osv_response(&response, &deps);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "RUSTSEC-0000-0001");
+        assert_eq!(findings[0].package_name, "pkg-b"); // null 结果索引被跳过，对应第二个依赖
+        assert_eq!(findings[0].summary, "real summary");
+    }
+
+    #[test]
+    fn test_process_osv_response_no_vulns() {
+        // vulns 为 None 或空数组 → 不产生 findings
+        let response = OsvResponse {
+            results: vec![
+                Some(OsvResult { vulns: None }),
+                Some(OsvResult {
+                    vulns: Some(vec![]),
+                }),
+            ],
+        };
+        let deps = vec![
+            Dependency {
+                name: "a".to_string(),
+                version: "1".to_string(),
+                ecosystem: "crates.io".to_string(),
+            },
+            Dependency {
+                name: "b".to_string(),
+                version: "2".to_string(),
+                ecosystem: "crates.io".to_string(),
+            },
+        ];
+        assert!(process_osv_response(&response, &deps).is_empty());
+    }
+
+    #[test]
+    fn test_process_osv_response_results_exceed_deps() {
+        // 结果数多于依赖数 → 越界保护，不 panic，只处理有对应依赖的结果
+        let response = OsvResponse {
+            results: vec![
+                Some(OsvResult {
+                    vulns: Some(vec![OsvVuln {
+                        id: "RUSTSEC-0001".to_string(),
+                        summary: None,
+                        database_specific: None,
+                    }]),
+                }),
+                Some(OsvResult {
+                    vulns: Some(vec![OsvVuln {
+                        id: "RUSTSEC-0002".to_string(),
+                        summary: None,
+                        database_specific: None,
+                    }]),
+                }),
+                Some(OsvResult {
+                    vulns: Some(vec![OsvVuln {
+                        id: "RUSTSEC-0003".to_string(),
+                        summary: None,
+                        database_specific: None,
+                    }]),
+                }),
+            ],
+        };
+        let deps = vec![Dependency {
+            name: "a".to_string(),
+            version: "1".to_string(),
+            ecosystem: "crates.io".to_string(),
+        }];
+        let findings = process_osv_response(&response, &deps);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "RUSTSEC-0001");
+    }
+
+    #[test]
+    fn test_compute_detail_severity_from_github_level() {
+        // GitHub advisory 的 database_specific.severity 应映射为真实严重度（非估算）
+        let db = Some(serde_json::json!({ "severity": "LOW", "cwe_ids": ["CWE-476"] }));
+        let (severity, estimated) = compute_detail_severity(&db).unwrap();
+        assert_eq!(severity, crate::model::Severity::Low);
+        assert!(!estimated, "真实严重度不应标记为估算");
+
+        // 无任何严重度信息 → 返回 None，由上层保持估算 Medium
+        assert!(compute_detail_severity(&None).is_none());
+    }
+
+    #[test]
+    fn test_compute_detail_severity_levels_and_unknown() {
+        // 各级 GitHub severity 映射
+        for (level, expected) in [
+            ("LOW", crate::model::Severity::Low),
+            ("medium", crate::model::Severity::Medium),
+            ("HIGH", crate::model::Severity::High),
+            ("Critical", crate::model::Severity::Critical),
+        ] {
+            let db = Some(serde_json::json!({ "severity": level }));
+            let (severity, estimated) = compute_detail_severity(&db).unwrap();
+            assert_eq!(severity, expected, "level={}", level);
+            assert!(!estimated);
+        }
+
+        // 未知 severity 字符串 → None（保持估算，不 panic）
+        assert!(
+            compute_detail_severity(&Some(serde_json::json!({ "severity": "INFO" }))).is_none()
+        );
+        // database_specific 存在但无 severity 字段 → None
+        assert!(
+            compute_detail_severity(&Some(serde_json::json!({ "license": "CC0-1.0" }))).is_none()
+        );
+    }
+
+    #[test]
+    fn test_extract_cvss_score_v3_vector_score() {
+        // CVSS v3.1 向量 AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H → ≈9.8
+        let db = Some(serde_json::json!({
+            "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        }));
+        let score = extract_cvss_score(&db).unwrap();
+        assert!((score - 9.8).abs() < 0.05, "score={}", score);
+    }
+
+    #[test]
+    fn test_extract_cvss_score_missing_returns_none() {
+        // 无 score / cvss 字段 → None
+        assert!(extract_cvss_score(&None).is_none());
+        assert!(extract_cvss_score(&Some(serde_json::json!({ "license": "CC0-1.0" }))).is_none());
     }
 }

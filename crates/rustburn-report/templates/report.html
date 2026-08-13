@@ -813,7 +813,7 @@ svg { display: block; flex-shrink: 0; }
 <details class="about-note">
   <summary>关于这份报告：三层公式如何得出风险分？</summary>
   <div class="about-body">
-    rustburn 用三层公式评估代码技术债：<code>基础风险分</code>（复杂度 / 历史 / 依赖三个维度的仓库内百分位排名）&times; <code>趋势系数</code>（历史快照分数变化，&gt;1 放大风险、&lt;1 收窄）&rarr; <code>最终热力值</code>。分数越高，风险越大；所有中间值均可在此报告中追溯。
+    rustburn 用三层公式评估代码技术债：<code>基础风险分</code>（复杂度 / 历史 / 依赖三个维度的仓库内百分位排名）&times; <code>趋势系数</code>（历史快照分数变化，&gt;1 放大风险、&lt;1 收窄；本版未启用，恒为 1.0）&rarr; <code>最终热力值</code>。分数越高，风险越大；所有中间值均可在此报告中追溯。
   </div>
 </details>
 
@@ -1064,11 +1064,16 @@ svg { display: block; flex-shrink: 0; }
                       <canvas data-trend-file="{{ file.raw.path }}" data-trend-base="{{ self.fmt_f64(file.base_risk_score, 2) }}"></canvas>
                     </div>
                     <div class="chart-meta">
+                      {% if file.trend_history.is_empty() %}
+                      <span style="color:var(--text-muted);">趋势分析未启用：当前版本未采集历史快照，系数恒为 1.0（不影响基础风险分）</span>
+                      <span class="tag">趋势系数：{{ self.fmt_f64(file.trend_coefficient, 2) }}（未启用）</span>
+                      {% else %}
                       <span>历史平均：{{ self.fmt_f64val(self.avg_trend_history_risk(file.trend_history), 1) }} &nbsp;&middot;&nbsp; 当前：{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
                       <span class="tag">
                         趋势系数：{{ self.fmt_f64(file.trend_coefficient, 2) }}
-                        {% if file.trend_coefficient >= 1.0 %}(风险上升){% else if file.trend_coefficient < 0.95 %}(风险下降){% else %}(稳定){% endif %}
+                        {% if file.trend_coefficient > 1.01 %}(风险上升){% else if file.trend_coefficient < 0.99 %}(风险下降){% else %}(稳定){% endif %}
                       </span>
+                      {% endif %}
                     </div>
                   </div>
                   <div class="detail-pane" data-pane-idx="3">
@@ -1121,15 +1126,21 @@ svg { display: block; flex-shrink: 0; }
                     <div class="formula-body open">
                       <div class="formula-stage">
                         <span class="stage-num">1</span>
-                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位数加权）</span>
+                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位加权）+ 单一高风险维度惩罚</span>
                         <span class="stage-arrow">&rarr;</span>
                         <span class="stage-result" style="background:var(--accent-dim);color:var(--accent);">{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
                       </div>
                       <div class="formula-stage active">
                         <span class="stage-num">2</span>
+                        {% if file.trend_history.is_empty() %}
+                        <span class="stage-label">趋势修正系数 = 历史波动加权（本版未启用：无历史快照，恒为 1.0）</span>
+                        <span class="stage-arrow">&rarr;</span>
+                        <span class="stage-result" style="background:var(--yellow-bg);color:var(--yellow);">{{ self.fmt_f64(file.trend_coefficient, 2) }}x（未启用）</span>
+                        {% else %}
                         <span class="stage-label">趋势修正系数 = 历史波动加权（风险越高持续时间越长）</span>
                         <span class="stage-arrow">&rarr;</span>
                         <span class="stage-result" style="background:var(--yellow-bg);color:var(--yellow);">{{ self.fmt_f64(file.trend_coefficient, 2) }}x</span>
+                        {% endif %}
                       </div>
                       <div class="formula-stage">
                         <span class="stage-num">3</span>
@@ -1298,8 +1309,8 @@ svg { display: block; flex-shrink: 0; }
       <div class="formula-inline">
         dimension_value = 归一化维度原始值<br>
         percentile = 该文件在所有文件中的排名百分位<br>
-        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（percentile 加权）<br>
-        final_heat = base_risk * trend_coefficient
+        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（percentile 加权）+ 单一高风险维度惩罚<br>
+        final_heat = base_risk * trend_coefficient（本版未启用，恒为 1.0）
       </div>
       <p style="margin-top:10px;">
         数据覆盖度：
