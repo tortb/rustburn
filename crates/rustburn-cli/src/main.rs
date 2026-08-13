@@ -80,6 +80,27 @@ struct ScanStats {
 /// 单文件大小上限（10 MiB）
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
+/// .rbignore 默认模板内容
+const RBIGNORE_TEMPLATE: &str = "\
+# rustburn ignore rules (gitignore-style).
+# Edit this file to exclude files and directories from scanning.
+#
+# Default exclusions:
+target/
+dist/
+out/
+";
+
+/// 如果 .rbignore 不存在，自动创建包含默认规则的模板文件。
+fn ensure_rbignore(repo_path: &Path) {
+    let path = repo_path.join(".rbignore");
+    if !path.exists() {
+        if fs::write(&path, RBIGNORE_TEMPLATE).is_ok() {
+            eprintln!("Created .rbignore with default exclusions (target/, dist/, out/).");
+        }
+    }
+}
+
 /// 读取 .rbignore（gitignore 风格），返回忽略模式列表。
 fn read_rbignore(repo_path: &Path) -> Vec<String> {
     let content = match fs::read_to_string(repo_path.join(".rbignore")) {
@@ -246,6 +267,7 @@ fn run() -> Result<(f64, Option<f64>), String> {
         analyze_git_history(repo_path, cli.max_commits).map_err(|e| e.to_string())?;
 
     // Phase 2: 扫描文件并分析复杂度
+    ensure_rbignore(repo_path);
     let ignore_patterns = {
         let mut patterns = read_rbignore(repo_path);
         patterns.extend(cli.ignore.iter().cloned());

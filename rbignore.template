@@ -1,0 +1,7 @@
+# rustburn ignore rules (gitignore-style).
+# Edit this file to exclude files and directories from scanning.
+#
+# Default exclusions:
+target/
+dist/
+out/
