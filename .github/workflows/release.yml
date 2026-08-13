@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: tar.gz
+            cross: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+            cross: false
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: tar.gz
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p rustburn
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p rustburn
+
+      - name: Package (Linux / macOS)
+        if: matrix.ext == 'tar.gz'
+        shell: bash
+        run: |
+          ASSET="rb-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/rb dist/rb
+          chmod 755 dist/rb
+          tar -czf "$ASSET.tar.gz" -C dist rb
+          echo "asset_file=$ASSET.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.ext == 'zip'
+        shell: bash
+        run: |
+          ASSET="rb-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/rb.exe dist/
+          7z a "$ASSET.zip" dist/rb.exe
+          echo "asset_file=$ASSET.zip" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.asset_file }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum -- * > SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: artifacts/*
+          generate_release_notes: true

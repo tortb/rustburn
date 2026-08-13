@@ -17,7 +17,9 @@ serde_json = "1"
 toml = "0.8"
 anyhow = "1"
 thiserror = "2"
-git2 = "0.19"
+# 仅用于本地仓库分析（revwalk/diff），不需要 ssh/https 远程传输，
+# 关闭默认特性以消除 openssl-sys/libssh2 系统依赖，保证跨平台可移植构建。
+git2 = { version = "0.19", default-features = false }
 tree-sitter = "0.24"
 tree-sitter-rust = "0.23"
 tree-sitter-javascript = "0.23"
