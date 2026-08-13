@@ -537,37 +537,35 @@ fn extract_cvss_score(database_specific: &Option<serde_json::Value>) -> Option<f
         return Some(score);
     }
 
-    // 尝试从 cvss 字段提取
-    if let Some(cvss) = db.get("cvss") {
-        // 如果是数字，直接返回
-        if let Some(score) = cvss.as_f64() {
-            return Some(score);
-        }
+    extract_cvss_vector_score(db)
+}
 
-        // 如果是字符串，尝试解析 CVSS 向量
-        if let Some(cvss_str) = cvss.as_str() {
-            // 检查是否包含直接的分数（某些 OSV 响应会在向量后附加分数）
-            // 例如: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (9.8)"
-            if let Some(paren_start) = cvss_str.rfind('(') {
-                if let Some(paren_end) = cvss_str.rfind(')') {
-                    if paren_start < paren_end {
-                        let score_str = &cvss_str[paren_start + 1..paren_end];
-                        if let Ok(score) = score_str.trim().parse::<f64>() {
-                            return Some(score);
-                        }
-                    }
-                }
-            }
-
-            // 尝试从向量字符串计算分数
-            // CVSS v3 向量格式: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
-            if cvss_str.starts_with("CVSS:3") {
-                return Some(calculate_cvss_v3_score(cvss_str));
-            }
-        }
+/// 从 `cvss` 字段提取分数：数字 / 括号内分数 / CVSS v3 向量。
+fn extract_cvss_vector_score(db: &serde_json::Value) -> Option<f64> {
+    let cvss = db.get("cvss")?;
+    if let Some(score) = cvss.as_f64() {
+        return Some(score);
     }
+    let cvss_str = cvss.as_str()?;
 
-    None
+    parse_parenthesized_score(cvss_str).or_else(|| {
+        // 尝试从向量字符串计算分数
+        if cvss_str.starts_with("CVSS:3") {
+            Some(calculate_cvss_v3_score(cvss_str))
+        } else {
+            None
+        }
+    })
+}
+
+/// 解析向量后附带的分数，例如 `"CVSS:3.1/AV:N/... (9.8)"`。
+fn parse_parenthesized_score(cvss_str: &str) -> Option<f64> {
+    let paren_start = cvss_str.rfind('(')?;
+    let paren_end = cvss_str.rfind(')')?;
+    if paren_start >= paren_end {
+        return None;
+    }
+    cvss_str[paren_start + 1..paren_end].trim().parse().ok()
 }
 
 /// 从 CVSS v3 向量字符串计算分数

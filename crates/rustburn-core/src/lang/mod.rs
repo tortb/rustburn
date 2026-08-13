@@ -103,6 +103,42 @@ pub(crate) fn parse_source(lang: Language, source: &str) -> Result<Tree, ParseEr
         .ok_or_else(|| ParseError::ParseFailed("parser 返回空结果".to_string()))
 }
 
+/// 通用链式 else-if 判断（rust/js/mock 三个适配器共用，SPEC v2 §2.1 禁止事项 2-A）。
+///
+/// `if_kind` / `block_kind` 为语言相关节点名（如 `if_expression`/`block`），
+/// 其余判定逻辑对三种语言完全一致，故收敛到此公共实现避免重复代码。
+pub(crate) fn chained_else_if<'tree>(
+    if_kind: &str,
+    block_kind: &str,
+    node: &Node<'tree>,
+) -> bool {
+    if node.kind() != if_kind {
+        return false;
+    }
+
+    // ① 定位 else 分支容器；② 该容器必须是外层 if 的 alternative 字段
+    let else_clause = match node.parent() {
+        Some(p) if p.kind() == "else_clause" => p,
+        Some(block)
+            if block.kind() == block_kind
+                && block.named_child_count() == 1
+                && block.parent().is_some_and(|p| p.kind() == "else_clause") =>
+        {
+            block.parent().expect("checked above")
+        }
+        _ => return false,
+    };
+    let Some(outer_if) = else_clause.parent() else {
+        return false;
+    };
+    if outer_if.kind() != if_kind || !is_alternative_field(&outer_if, &else_clause) {
+        return false;
+    }
+
+    // ③ 未被赋值/返回等表达式上下文包裹
+    !in_expression_context(&outer_if)
+}
+
 /// 判断节点是否为指定 if 节点的 alternative（else）分支。
 pub(crate) fn is_alternative_field<'tree>(if_node: &Node<'tree>, child: &Node<'tree>) -> bool {
     if_node

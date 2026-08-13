@@ -1,8 +1,6 @@
 //! JavaScript 语言适配器。
 
-use crate::lang::{
-    in_expression_context, is_alternative_field, parse_source, LanguageAdapter, ParseError,
-};
+use crate::lang::{chained_else_if, parse_source, LanguageAdapter, ParseError};
 use crate::model::Language;
 use tree_sitter::{Node, Tree};
 
@@ -59,30 +57,6 @@ impl LanguageAdapter for JsAdapter {
     }
 
     fn is_chained_else_if<'tree>(&self, node: &Node<'tree>) -> bool {
-        if node.kind() != "if_statement" {
-            return false;
-        }
-
-        // tree-sitter-javascript 同样用 else_clause 包装 else 分支。
-        let else_clause = match node.parent() {
-            Some(p) if p.kind() == "else_clause" => p,
-            Some(block)
-                if block.kind() == "statement_block"
-                    && block.named_child_count() == 1
-                    && block.parent().is_some_and(|p| p.kind() == "else_clause") =>
-            {
-                block.parent().expect("checked above")
-            }
-            _ => return false,
-        };
-        let Some(outer_if) = else_clause.parent() else {
-            return false;
-        };
-        if outer_if.kind() != "if_statement" || !is_alternative_field(&outer_if, &else_clause) {
-            return false;
-        }
-
-        // ③ 未被赋值/返回等表达式上下文包裹
-        !in_expression_context(&outer_if)
+        chained_else_if("if_statement", "statement_block", node)
     }
 }
