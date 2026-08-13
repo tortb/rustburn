@@ -282,6 +282,9 @@ struct OsvVulnDetail {
     summary: Option<String>,
     #[serde(default)]
     database_specific: Option<serde_json::Value>,
+    /// 同一漏洞在其他编号体系中的 ID（如 GHSA <-> RUSTSEC）
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 
 /// 补全漏洞摘要与真实严重度。
@@ -290,7 +293,7 @@ struct OsvVulnDetail {
 /// `GET {base_url}/v1/vulns/{id}`，用官方返回的 summary 填充报告，
 /// 避免报告中出现 ID 真实但摘要为空的记录。
 /// 单个详情请求失败时保留批量结果（summary 为空、严重度标记为估算）。
-fn enrich_findings(findings: &mut [DependencyFinding], base_url: &str) {
+fn enrich_findings(findings: &mut Vec<DependencyFinding>, base_url: &str) {
     use std::collections::{HashMap, HashSet};
 
     if findings.is_empty() {
@@ -366,6 +369,106 @@ fn enrich_findings(findings: &mut [DependencyFinding], base_url: &str) {
                 f.severity_estimated
             ));
         }
+    }
+
+    // 跨数据源去重：同一漏洞可能同时以 GHSA 与 RUSTSEC 两套编号出现
+    // （详情中的 aliases 互指），必须合并为一条，避免重复计数。
+    dedupe_by_aliases(findings, &details);
+}
+
+/// 通过 aliases 合并同一漏洞的多条编号记录。
+///
+/// - canonical 取 `id ∪ aliases` 中字典序最小者；
+/// - 同一 canonical 组内只保留一条，优先保留 `RUSTSEC-` 前缀（RustSec 为
+///   Rust 生态的权威编号体系），否则保留第一条；
+/// - 被合并的记录中更完整的信息（真实严重度 / 非空摘要）会吸收到保留记录上；
+/// - 详情拉取失败（无 aliases）的记录按自身 ID 独立成组，不受影响。
+fn dedupe_by_aliases(
+    findings: &mut Vec<DependencyFinding>,
+    details: &std::collections::HashMap<String, OsvVulnDetail>,
+) {
+    use std::collections::{HashMap as Map, HashSet};
+
+    if findings.len() <= 1 {
+        return;
+    }
+
+    let ids: Vec<String> = findings.iter().map(|f| f.id.clone()).collect();
+
+    // 计算每个 id 的 canonical（组键）
+    let mut canonical_of: Map<String, String> = Map::new();
+    for id in &ids {
+        let mut keys = vec![id.clone()];
+        if let Some(detail) = details.get(id) {
+            keys.extend(detail.aliases.iter().cloned());
+        }
+        let canonical = keys.iter().min().cloned().unwrap_or_else(|| id.clone());
+        canonical_of.insert(id.clone(), canonical);
+    }
+
+    // 组内选择保留的记录
+    let mut groups: Map<String, Vec<String>> = Map::new();
+    for id in &ids {
+        groups
+            .entry(canonical_of[id].clone())
+            .or_default()
+            .push(id.clone());
+    }
+
+    let chosen_list: Vec<(String, Vec<String>)> = groups
+        .into_values()
+        .map(|members| {
+            let chosen = members
+                .iter()
+                .find(|m| m.starts_with("RUSTSEC-"))
+                .unwrap_or(&members[0])
+                .clone();
+            (chosen, members)
+        })
+        .collect();
+
+    let keep: HashSet<String> = chosen_list.iter().map(|(c, _)| c.clone()).collect();
+    let before = findings.len();
+    findings.retain(|f| keep.contains(&f.id));
+
+    // 从被合并的记录中吸收更完整的信息（如 GHSA 侧的真实严重度）
+    for (chosen, members) in chosen_list {
+        let Some(target) = findings.iter_mut().find(|f| f.id == chosen) else {
+            continue;
+        };
+        for id in members {
+            if id == chosen {
+                continue;
+            }
+            let Some(detail) = details.get(&id) else {
+                continue;
+            };
+            if target.severity_estimated {
+                if let Some((severity, estimated)) =
+                    compute_detail_severity(&detail.database_specific)
+                {
+                    if !estimated {
+                        target.severity = severity;
+                        target.severity_estimated = false;
+                    }
+                }
+            }
+            if target.summary.is_empty() {
+                if let Some(summary) = &detail.summary {
+                    if !summary.trim().is_empty() {
+                        target.summary = summary.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    if crate::debug_enabled() {
+        crate::debug_log(format_args!(
+            "osv_vuln_dedupe before={} after={}",
+            before,
+            findings.len()
+        ));
     }
 }
 

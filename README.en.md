@@ -95,19 +95,66 @@ The generated `rustburn-report.html` is a self-contained single file that includ
 - **Dependency findings**: CVE / GHSA / OSV findings sorted by severity
 - **Anomalies**: history rewrite, temporary complexity drops, and other red flags
 
-## Scoring model (three-layer formula)
+## Scoring model (four-layer formula)
 
-1. **Base risk score** = `100 - cbrt((100 - C) × (100 - H) × (100 - D))`, where C / H / D are the repository-wide percentile ranks (0-100, higher is worse) of the complexity, history, and dependency dimensions
-2. **Trend coefficient** = `1 - trend_delta × 0.3` (change in historical snapshot scores, range 0.91-1.09)
-3. **Final heat score** = base risk score × trend coefficient (clamped to 0-100)
+rustburn's scoring is fully transparent; every layer below matches the source code exactly.
 
-The repository score = LOC-weighted mean + Top 5% penalty (`top_files_avg × 0.2`).
+**1. Dimension composite values** (0-100, from raw metrics)
+
+```
+complexity_value = cyclomatic_complexity×0.4 + max_if_nesting_depth×15×0.4 + avg_function_length×0.2
+history_value    = normalized_commits×0.35 + normalized_authors×0.10 + normalized_incidents×0.45 + staleness_risk×0.10
+dependency_value = max_cve_severity_score×0.60 + normalized_cve_count×0.25 + dependency_staleness×0.15
+```
+
+**2. Dimension risk** (complexity / history / dependency, each 0-100)
+
+```
+dimension_risk = 0.5 × repository percentile + 0.5 × absolute threshold mapping
+```
+
+- Repository percentile: `percentile = r / file_count × 100`, ties use the minimum rank (max=100, min=1/n);
+- The absolute mapping uses widely accepted industry thresholds (see table below) so small repositories cannot manufacture high-risk files purely from internal ranking.
+
+**3. Base risk score** (0-100)
+
+```
+base_risk = 0.6×C + 0.3×H + 0.1×D + high-risk dimension penalty
+```
+
+- High-risk dimension penalty: only when `max(C,H,D) > 50` and `max > mean_of_others × 1.25`, add `(max - mean_of_others) × 0.15`;
+- A single dimension at the 100th percentile never caps the total.
+
+**4. Final heat score** (0-100)
+
+```
+final_heat = base_risk × trend_coefficient
+```
+
+- The trend coefficient formula is `1 - trend_delta × 0.3` (change in historical snapshot scores, theoretical range 0.91-1.09); **the current version has trend analysis disabled (no historical snapshots), so it is always 1.0**.
+
+**Repository score** = LOC-weighted mean + Top 5% penalty (`top_files_avg × 0.2`), clamped to 0-100.
 
 Higher scores mean higher risk. The consistency coefficient is used only for confidence display and never participates in the final score.
 
+### Absolute threshold mapping — standard sources
+
+| Dimension | Metric and bands (low / medium / high / severe) | Source |
+| --- | --- | --- |
+| Complexity | Cyclomatic complexity `<10 / 10-20 / 20-50 / 50+` | McCabe cyclomatic complexity thresholds |
+| Complexity | If-nesting depth `≤4 / 5-7 / 8-10 / 11+` | ESLint `max-depth` rule (default max 4) |
+| History | Days since last change `0-30 / 31-90 / 91-180 / 180+` | Common code-staleness periods |
+| Dependency | Highest CVE severity `None / Low / Medium / High / Critical` | Official CVSS bands |
+
+Absolute score composition per dimension: `complexity = 0.7×cc_band + 0.3×depth_band`; `history = staleness_band`; `dependency = 0.6×severity_score + 0.25×cve_count_band` (staleness currently 0). The initial weights w1=w2=0.5 will be calibrated against real projects. When the scanned file count is below the threshold (default 30, configurable via `--min-files`), the report prominently notes "small sample size: percentile ranking is noisy".
+
+### Vulnerability deduplication
+
+The same vulnerability can appear under both GHSA and RUSTSEC identifiers (their OSV `aliases` fields point at each other). rustburn deduplicates across data sources using aliases, keeping one record per vulnerability (preferring the RUSTSEC id while absorbing the real severity from merged records), avoiding double counting.
+
 ## Anti-gaming
 
-Percentiles are **relative ranks** within the repository: even if an attacker dilutes absolute metrics by splitting functions or files, a proportional change across the whole repository leaves relative ranks and base risk scores essentially unchanged (tests guarantee a relative change of ≤ 15%). History rewrites and empty commits are detected or marked as unknown rather than directly lowering scores.
+Percentiles are **relative ranks** within the repository: even if an attacker dilutes absolute metrics by splitting functions or files, a proportional change across the whole repository leaves the relative ranks essentially unchanged (tests guarantee a relative change of ≤ 15% for the percentile part). The absolute-threshold part honestly follows real metrics (splitting genuinely lowers the absolute complexity score), which is its purpose. History rewrites and empty commits are detected or marked as unknown rather than directly lowering scores.
 
 ## Known limitations
 

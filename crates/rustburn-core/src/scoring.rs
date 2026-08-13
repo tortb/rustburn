@@ -189,6 +189,86 @@ fn format_f64s(values: &[f64]) -> String {
         .join(",")
 }
 
+/// 仓库内百分位在最终风险中的权重（初始各占 0.5，后续用真实项目数据校准）。
+pub const W_PERCENTILE: f64 = 0.5;
+/// 绝对阈值映射在最终风险中的权重。
+pub const W_ABSOLUTE: f64 = 0.5;
+
+/// 每个维度的最终风险值 = w1 * 仓库内百分位 + w2 * 绝对阈值映射分数。
+///
+/// 百分位反映"相对排名"，绝对阈值反映"行业公认的客观风险"，
+/// 二者混合避免小样本仓库靠内部相对排名人为制造高分文件。
+pub fn blend_percentile_and_absolute(
+    percentiles: &FilePercentileScores,
+    absolute: &FilePercentileScores,
+) -> FilePercentileScores {
+    FilePercentileScores {
+        complexity_risk: W_PERCENTILE * percentiles.complexity_risk
+            + W_ABSOLUTE * absolute.complexity_risk,
+        history_risk: W_PERCENTILE * percentiles.history_risk + W_ABSOLUTE * absolute.history_risk,
+        dependency_risk: W_PERCENTILE * percentiles.dependency_risk
+            + W_ABSOLUTE * absolute.dependency_risk,
+    }
+}
+
+/// 计算文件在三个维度上的绝对阈值映射分数（0-100，越高风险越大）。
+///
+/// 标准来源（均采用行业公认经验值，非 rustburn 自创）：
+/// - 复杂度：McCabe 圈复杂度阈值（<10 低 / 10-20 中 / 20-50 高 / >50 严重），
+///   以及 ESLint `max-depth` 规则默认上限（4 层）；
+/// - 历史：业界通用的代码陈旧周期（30 / 90 / 180 / 365 天）；
+/// - 依赖：CVSS 严重度官方分档（None/Low/Medium/High/Critical），
+///   多漏洞数量档位为经验值，待真实项目数据校准。
+pub fn absolute_risk_scores(metrics: &FileRawMetrics) -> FilePercentileScores {
+    FilePercentileScores {
+        complexity_risk: absolute_complexity(metrics),
+        history_risk: absolute_history(metrics),
+        dependency_risk: absolute_dependency(metrics),
+    }
+}
+
+/// 复杂度绝对分数：圈复杂度（McCabe）0.7 + 嵌套深度（ESLint max-depth）0.3。
+fn absolute_complexity(metrics: &FileRawMetrics) -> f64 {
+    0.7 * cc_band(metrics.cyclomatic_complexity) + 0.3 * depth_band(metrics.max_if_nesting_depth)
+}
+
+/// McCabe 圈复杂度阈值映射。
+fn cc_band(cc: u32) -> f64 {
+    match cc {
+        0..=9 => 15.0,   // 低
+        10..=19 => 50.0, // 中
+        20..=49 => 80.0, // 高
+        _ => 100.0,      // 严重
+    }
+}
+
+/// if 嵌套深度阈值映射（ESLint max-depth 默认上限 4 层）。
+fn depth_band(depth: u32) -> f64 {
+    match depth {
+        0..=4 => 15.0,  // 低
+        5..=7 => 50.0,  // 中
+        8..=10 => 80.0, // 高
+        _ => 100.0,     // 严重
+    }
+}
+
+/// 历史绝对分数：以陈旧度为准（30/90/180/365 天陈旧周期）。
+fn absolute_history(metrics: &FileRawMetrics) -> f64 {
+    calculate_recency_risk(metrics.last_modified_days_ago)
+}
+
+/// 依赖绝对分数：CVSS 严重度 0.6 + CVE 数量 0.25（过时程度暂恒为 0）。
+fn absolute_dependency(metrics: &FileRawMetrics) -> f64 {
+    let severity_score = metrics.max_cve_severity.to_score();
+    let cve_band = match metrics.cve_count {
+        0 => 0.0,
+        1 => 60.0,
+        2..=4 => 80.0,
+        _ => 100.0,
+    };
+    (severity_score * 0.6 + cve_band * 0.25).clamp(0.0, 100.0)
+}
+
 /// 计算单个值的 percentile。
 ///
 /// - 升序排序；
@@ -501,6 +581,111 @@ mod tests {
         assert_eq!(percentiles.complexity_risk, 50.0);
         assert_eq!(percentiles.history_risk, 50.0);
         assert_eq!(percentiles.dependency_risk, 50.0);
+    }
+
+    #[test]
+    fn test_absolute_risk_complexity_bands() {
+        // McCabe 圈复杂度阈值：<10 低 / 10-20 中 / 20-50 高 / >50 严重
+        let mut m = create_test_metrics();
+        m.cyclomatic_complexity = 7;
+        m.max_if_nesting_depth = 2;
+        let abs = absolute_risk_scores(&m);
+        // 0.7*15 + 0.3*15 = 15
+        assert!(
+            (abs.complexity_risk - 15.0).abs() < 1e-9,
+            "got {}",
+            abs.complexity_risk
+        );
+
+        m.cyclomatic_complexity = 25;
+        m.max_if_nesting_depth = 9;
+        let abs = absolute_risk_scores(&m);
+        // 0.7*80 + 0.3*80 = 80
+        assert!(
+            (abs.complexity_risk - 80.0).abs() < 1e-9,
+            "got {}",
+            abs.complexity_risk
+        );
+
+        // 圈复杂度中等、深度低：加权混合
+        m.cyclomatic_complexity = 15; // 中=50
+        m.max_if_nesting_depth = 2; // 低=15
+        let abs = absolute_risk_scores(&m);
+        // 0.7*50 + 0.3*15 = 39.5
+        assert!(
+            (abs.complexity_risk - 39.5).abs() < 1e-9,
+            "got {}",
+            abs.complexity_risk
+        );
+    }
+
+    #[test]
+    fn test_absolute_risk_history_recency() {
+        let mut m = create_test_metrics();
+        m.last_modified_days_ago = 10; // 新鲜
+        assert_eq!(absolute_risk_scores(&m).history_risk, 0.0);
+
+        m.last_modified_days_ago = 200; // 陈旧 >180 天
+        assert_eq!(absolute_risk_scores(&m).history_risk, 100.0);
+    }
+
+    #[test]
+    fn test_absolute_risk_dependency_cvss_and_count() {
+        // 无漏洞 → 0
+        let m = create_test_metrics();
+        assert_eq!(absolute_risk_scores(&m).dependency_risk, 0.0);
+
+        // Medium + 3 个 CVE → 0.6*50 + 0.25*80 = 50
+        let mut m = create_test_metrics();
+        m.max_cve_severity = Severity::Medium;
+        m.cve_count = 3;
+        assert!(
+            (absolute_risk_scores(&m).dependency_risk - 50.0).abs() < 1e-9,
+            "got {}",
+            absolute_risk_scores(&m).dependency_risk
+        );
+    }
+
+    #[test]
+    fn test_blend_weights_half_and_half() {
+        // 百分位 100 vs 绝对 0 → 混合后 50（不再被单一来源封顶）
+        let pct = FilePercentileScores {
+            complexity_risk: 100.0,
+            history_risk: 0.0,
+            dependency_risk: 0.0,
+        };
+        let abs = FilePercentileScores {
+            complexity_risk: 0.0,
+            history_risk: 0.0,
+            dependency_risk: 0.0,
+        };
+        let blended = blend_percentile_and_absolute(&pct, &abs);
+        assert!((blended.complexity_risk - 50.0).abs() < 1e-9);
+        assert_eq!(blended.history_risk, 0.0);
+        assert_eq!(blended.dependency_risk, 0.0);
+    }
+
+    #[test]
+    fn test_blend_low_absolute_keeps_healthy_file_low() {
+        // 回归验收：圈复杂度 7、嵌套 2 的"客观不差"文件，
+        // 即使百分位被推到 100，最终风险也不应虚高到 90+。
+        let mut m = create_test_metrics();
+        m.cyclomatic_complexity = 7;
+        m.max_if_nesting_depth = 2;
+
+        let abs = absolute_risk_scores(&m); // complexity_abs = 15
+        let pct = FilePercentileScores {
+            complexity_risk: 100.0,
+            history_risk: 100.0,
+            dependency_risk: 0.0,
+        };
+        let blended = blend_percentile_and_absolute(&pct, &abs);
+        // complexity = 0.5*100 + 0.5*15 = 57.5
+        assert!(
+            blended.complexity_risk < 60.0,
+            "低复杂度文件不应被打成 90+，实际 {}",
+            blended.complexity_risk
+        );
     }
 
     #[test]

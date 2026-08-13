@@ -182,6 +182,15 @@ svg { display: block; flex-shrink: 0; }
 }
 .btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 
+/* ===== Sample size warning ===== */
+.sample-warning {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--yellow-bg); color: var(--yellow);
+  border: 1px solid var(--yellow); border-radius: var(--radius-xs);
+  padding: 10px 14px; margin: 0 0 18px; font-size: 13px; line-height: 1.6;
+}
+.sample-warning svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+
 /* ===== KPI Cards ===== */
 .kpi-grid {
   display: grid; grid-template-columns: repeat(5, 1fr);
@@ -837,6 +846,14 @@ svg { display: block; flex-shrink: 0; }
   </div>
 </div>
 
+<!-- ===== 样本量警告横幅 ===== -->
+{% if report.analysis_metadata.sample_size_warning %}
+<div class="sample-warning">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <span><strong>样本量较小（{{ self.format_number_usize(self.file_count_value()) }} 个文件）</strong>：百分位排名统计噪声较大，建议结合绝对阈值分数（复杂度 McCabe / 依赖 CVSS 等）综合判断，本报告分数仅供参考。</span>
+</div>
+{% endif %}
+
 <!-- ===== KPI Cards ===== -->
 <div class="kpi-grid">
   <!-- 1. Repo Total Heat -->
@@ -1126,7 +1143,7 @@ svg { display: block; flex-shrink: 0; }
                     <div class="formula-body open">
                       <div class="formula-stage">
                         <span class="stage-num">1</span>
-                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位加权）+ 单一高风险维度惩罚</span>
+                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位 50% + 绝对阈值 50% 混合）+ 单一高风险维度惩罚</span>
                         <span class="stage-arrow">&rarr;</span>
                         <span class="stage-result" style="background:var(--accent-dim);color:var(--accent);">{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
                       </div>
@@ -1309,7 +1326,7 @@ svg { display: block; flex-shrink: 0; }
       <div class="formula-inline">
         dimension_value = 归一化维度原始值<br>
         percentile = 该文件在所有文件中的排名百分位<br>
-        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（percentile 加权）+ 单一高风险维度惩罚<br>
+        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（百分位 50% + 绝对阈值 50% 混合）+ 单一高风险维度惩罚<br>
         final_heat = base_risk * trend_coefficient（本版未启用，恒为 1.0）
       </div>
       <p style="margin-top:10px;">

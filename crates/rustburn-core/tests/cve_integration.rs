@@ -140,3 +140,112 @@ fn cve_detail_failure_degrades_gracefully() {
     assert!(f.summary.is_empty(), "详情失败时摘要为空（不编造）");
     assert!(f.severity_estimated);
 }
+
+/// 跨数据源去重：同一漏洞同时以 GHSA 与 RUSTSEC 两套编号出现
+/// （详情 aliases 互指）时，必须只保留一条，避免重复计数。
+#[test]
+fn alias_vulns_are_deduplicated() {
+    let server = MockServer::start(|method, path, _body| {
+        if method == "POST" && path == "/v1/querybatch" {
+            (
+                200,
+                "application/json",
+                r#"{"results":[{"vulns":[
+                    {"id":"GHSA-j39j-6gw9-jw6h","modified":"2026-02-05T14:43:45Z"},
+                    {"id":"RUSTSEC-2026-0008","modified":"2026-02-05T06:56:18Z"}
+                ]}]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/GHSA-j39j-6gw9-jw6h" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"GHSA-j39j-6gw9-jw6h","summary":"git2 has potential undefined behavior when dereferencing Buf struct","aliases":["RUSTSEC-2026-0008"],"database_specific":{"severity":"LOW"}}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/RUSTSEC-2026-0008" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"RUSTSEC-2026-0008","summary":"Potential undefined behavior when dereferencing Buf struct","aliases":["GHSA-j39j-6gw9-jw6h"]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else {
+            (404, "application/json", b"{}".to_vec())
+        }
+    });
+
+    let deps = vec![Dependency {
+        name: "git2".to_string(),
+        version: "0.19.0".to_string(),
+        ecosystem: "crates.io".to_string(),
+    }];
+
+    let findings = query_osv_with_base(&deps, &server.addr).expect("query_osv");
+    assert_eq!(
+        findings.len(),
+        1,
+        "GHSA 与 RUSTSEC 为同一漏洞（aliases 互指），应只保留一条"
+    );
+    assert_eq!(
+        findings[0].id, "RUSTSEC-2026-0008",
+        "应优先保留 RUSTSEC 编号"
+    );
+    assert_eq!(
+        findings[0].severity,
+        Severity::Low,
+        "保留 GHSA 的真实严重度"
+    );
+    assert!(!findings[0].severity_estimated);
+}
+
+/// 不同漏洞（无 aliases 关联）不得被去重合并。
+#[test]
+fn distinct_vulns_are_not_deduplicated() {
+    let server = MockServer::start(|method, path, _body| {
+        if method == "POST" && path == "/v1/querybatch" {
+            (
+                200,
+                "application/json",
+                r#"{"results":[{"vulns":[
+                    {"id":"RUSTSEC-2026-0008","modified":"2026-02-05T06:56:18Z"},
+                    {"id":"RUSTSEC-2026-0183","modified":"2026-06-17T13:00:04Z"}
+                ]}]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/RUSTSEC-2026-0008" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"RUSTSEC-2026-0008","summary":"Buf struct UB","aliases":["GHSA-j39j-6gw9-jw6h"]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/RUSTSEC-2026-0183" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"RUSTSEC-2026-0183","summary":"Remote::list() UB","aliases":[]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else {
+            (404, "application/json", b"{}".to_vec())
+        }
+    });
+
+    let deps = vec![Dependency {
+        name: "git2".to_string(),
+        version: "0.19.0".to_string(),
+        ecosystem: "crates.io".to_string(),
+    }];
+
+    let findings = query_osv_with_base(&deps, &server.addr).expect("query_osv");
+    assert_eq!(findings.len(), 2, "两个独立漏洞不应被去重合并");
+    assert_eq!(findings[0].id, "RUSTSEC-2026-0008");
+    assert_eq!(findings[1].id, "RUSTSEC-2026-0183");
+}

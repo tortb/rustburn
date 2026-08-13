@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "rustburn"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "rustburn-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "rustburn-report"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "askama",

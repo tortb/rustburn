@@ -16,9 +16,10 @@ use rustburn_core::model::{
     FileScore, Language, RepoReport,
 };
 use rustburn_core::scoring::{
-    calculate_base_risk_score, calculate_consistency_coefficient, calculate_dimension_values,
-    calculate_final_heat_score, calculate_percentile_scores, calculate_repo_total_heat_score,
-    calculate_top_risk_files, calculate_trend_coefficient,
+    absolute_risk_scores, blend_percentile_and_absolute, calculate_base_risk_score,
+    calculate_consistency_coefficient, calculate_dimension_values, calculate_final_heat_score,
+    calculate_percentile_scores, calculate_repo_total_heat_score, calculate_top_risk_files,
+    calculate_trend_coefficient,
 };
 use rustburn_core::update::{
     cache_dir, check_update_silently, is_newer, latest_release, notes_summary, platform_target,
@@ -70,6 +71,10 @@ struct Cli {
     /// 超过该分数时返回 exit code 1
     #[arg(long, global = true)]
     fail_above: Option<f64>,
+
+    /// 样本量阈值：文件数低于该值时在报告中标注"百分位统计噪声较大"
+    #[arg(long, default_value_t = 30, global = true)]
+    min_files: u32,
 }
 
 #[derive(Subcommand)]
@@ -354,6 +359,16 @@ fn run() -> Result<(f64, Option<f64>), String> {
         warnings.push("单文件仓库：percentile 设为 50".to_string());
     }
 
+    // 样本量过小：百分位排名统计噪声较大，需在报告中显著标注
+    let sample_size_warning = (scanned_files.len() as u32) < cli.min_files;
+    if sample_size_warning {
+        warnings.push(format!(
+            "样本量较小（{} 个文件 < {}）：百分位排名统计噪声较大，请结合绝对阈值分数判断",
+            scanned_files.len(),
+            cli.min_files
+        ));
+    }
+
     // 构建文件指标
     let mut file_metrics_list: Vec<FileRawMetrics> = Vec::new();
 
@@ -462,8 +477,11 @@ fn run() -> Result<(f64, Option<f64>), String> {
     let mut file_scores: Vec<FileScore> = Vec::new();
 
     for (i, raw) in file_metrics_list.iter().enumerate() {
-        let percentiles =
-            calculate_percentile_scores(&all_dimension_values[i], &all_dimension_values);
+        // 最终风险 = w1 * 仓库内百分位 + w2 * 绝对阈值映射（w1=w2=0.5）
+        let percentiles = blend_percentile_and_absolute(
+            &calculate_percentile_scores(&all_dimension_values[i], &all_dimension_values),
+            &absolute_risk_scores(raw),
+        );
 
         let base_risk = calculate_base_risk_score(&percentiles);
 
@@ -513,6 +531,7 @@ fn run() -> Result<(f64, Option<f64>), String> {
             supported_languages: vec!["rust".to_string(), "javascript".to_string()],
             elapsed_seconds: elapsed,
             file_count: scanned_files.len(),
+            sample_size_warning,
             skipped_symlinks: scan_stats.skipped_symlinks,
             skipped_files: scan_stats.skipped_files,
         },

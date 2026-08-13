@@ -466,6 +466,7 @@ mod tests {
                 supported_languages: vec!["rust".to_string(), "javascript".to_string()],
                 elapsed_seconds: 1.5,
                 file_count: 1,
+                sample_size_warning: true,
                 skipped_symlinks: 0,
                 skipped_files: 0,
             },

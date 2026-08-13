@@ -236,6 +236,9 @@ pub struct AnalysisMetadata {
     pub elapsed_seconds: f64,
     /// 扫描的文件数量
     pub file_count: usize,
+    /// 文件数低于样本量阈值，百分位排名统计噪声较大（报告需显著标注）
+    #[serde(default)]
+    pub sample_size_warning: bool,
     /// 跳过的符号链接数量
     pub skipped_symlinks: usize,
     /// 跳过的二进制/不可解析文件数量
