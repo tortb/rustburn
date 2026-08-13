@@ -283,10 +283,30 @@ pub fn update_to_latest(
         }
     };
 
+    // 手动解压不会保留 tar 中的权限位，必须显式设置可执行权限，
+    // 否则 rename 替换后目标二进制会失去 +x（zsh: 权限不够）。
+    if let Err(e) = set_executable_permission(&new_binary) {
+        cleanup();
+        return Err(e);
+    }
+
     // 4. 原子替换
     let result = replace_binary(exe_path, &new_binary);
     cleanup();
     result
+}
+
+/// 设置可执行权限（Unix: 0o755；Windows 无 POSIX 权限位，直接忽略）。
+#[cfg(unix)]
+fn set_executable_permission(path: &Path) -> Result<(), UpdateError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable_permission(_path: &Path) -> Result<(), UpdateError> {
+    Ok(())
 }
 
 /// 下载文件到 `dest`。

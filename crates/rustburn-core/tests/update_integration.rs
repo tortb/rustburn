@@ -217,6 +217,14 @@ fn update_success_replaces_binary_atomically() {
         "v0.9.9-binary-content",
         "校验通过后应原子替换为新二进制"
     );
+
+    // 手动解压不保留权限位，更新后必须显式可执行（回归：zsh 权限不够）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&exe).unwrap().permissions().mode();
+        assert_ne!(mode & 0o111, 0, "更新后的二进制必须具有可执行权限");
+    }
 }
 
 /// replace_binary：直接验证 rename 语义（目标被新内容覆盖）。
