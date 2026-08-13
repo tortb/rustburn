@@ -6,6 +6,7 @@ use chrono::Utc;
 use git2::{DiffFindOptions, Repository, Revwalk};
 use regex::Regex;
 
+use crate::context::GitTimeline;
 use crate::model::HistoryRewriteState;
 
 /// 文件级 Git 历史指标。
@@ -216,6 +217,60 @@ pub fn analyze_git_history(
     Ok((results, history_truncated, history_rewrite))
 }
 
+/// 分析 Git 仓库历史，返回每个 HEAD 文件的 commit 时间线（ChangeRiskAnalyzer 使用）。
+///
+/// 与 [analyze_git_history] 共享同一次 commit 遍历（时间戳从同一趟历史收集产生）。
+pub fn analyze_git_timelines(
+    repo_path: &Path,
+    max_commits: u32,
+) -> Result<(HashMap<String, GitTimeline>, bool, HistoryRewriteState), anyhow::Error> {
+    let repo =
+        Repository::open(repo_path).map_err(|e| anyhow::anyhow!("repository_not_found: {}", e))?;
+
+    let history_rewrite = detect_history_rewrite(repo_path);
+
+    if is_empty_repo(&repo) {
+        return Ok((HashMap::new(), false, history_rewrite));
+    }
+
+    let rename_map = build_rename_map(&repo, max_commits);
+    let (history, history_truncated) = collect_history(&repo, max_commits, &rename_map)?;
+    let timelines = build_timelines(&repo, &rename_map, &history);
+
+    Ok((timelines, history_truncated, history_rewrite))
+}
+
+/// 从 HEAD tree 生成文件级时间线。
+fn build_timelines(
+    repo: &Repository,
+    rename_map: &HashMap<String, String>,
+    history: &FileHistory,
+) -> HashMap<String, GitTimeline> {
+    let mut results = HashMap::new();
+
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| commit.tree().ok());
+
+    if let Some(tree) = head_tree {
+        collect_tree_entries(repo, &tree, "", &mut |path| {
+            let canonical = rename_map.get(&path).cloned().unwrap_or(path.clone());
+            if let Some(mut timeline) = history.timelines.get(&canonical).cloned() {
+                timeline.distinct_authors = history
+                    .authors
+                    .get(&canonical)
+                    .map(|a| a.len() as u32)
+                    .unwrap_or(0);
+                results.insert(canonical, timeline);
+            }
+        });
+    }
+
+    results
+}
+
 /// 单个 commit 的 diff 中涉及的唯一文件路径（去重，按 rename 后的规范路径）。
 fn modified_files_in_diff(
     diff: &git2::Diff,
@@ -251,6 +306,8 @@ struct FileHistory {
     authors: HashMap<String, HashSet<String>>,
     incidents: HashMap<String, u32>,
     last_modified: HashMap<String, i64>, // unix timestamp
+    /// 时间线（ChangeRiskAnalyzer 的衰减计算输入，SPEC v2 §5）
+    timelines: HashMap<String, GitTimeline>,
 }
 
 impl FileHistory {
@@ -260,6 +317,7 @@ impl FileHistory {
             authors: HashMap::new(),
             incidents: HashMap::new(),
             last_modified: HashMap::new(),
+            timelines: HashMap::new(),
         }
     }
 
@@ -277,6 +335,13 @@ impl FileHistory {
         // incident commits
         if is_incident {
             *self.incidents.entry(path.to_string()).or_insert(0) += 1;
+        }
+
+        // 时间线
+        let timeline = self.timelines.entry(path.to_string()).or_default();
+        timeline.commit_timestamps.push(commit_time);
+        if is_incident {
+            timeline.incident_timestamps.push(commit_time);
         }
 
         // last modified

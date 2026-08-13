@@ -12,6 +12,8 @@ use std::time::Duration;
 ///
 /// handler 接收 (method, path, body) 并返回 (status, content_type, response_body)。
 /// 每个连接上循环处理多个请求，直到客户端关闭。
+// `requests()` 仅在部分集成测试中使用，其他测试二进制导入本模块时视为 dead code。
+#[allow(dead_code)]
 pub struct MockServer {
     /// base URL，例如 `http://127.0.0.1:PORT`
     pub addr: String,
@@ -19,6 +21,7 @@ pub struct MockServer {
 }
 
 impl MockServer {
+    #[allow(dead_code)]
     pub fn start<F>(handler: F) -> Self
     where
         F: Fn(&str, &str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync + 'static,
@@ -48,6 +51,7 @@ impl MockServer {
     }
 
     /// 当前已收到的请求数。
+    #[allow(dead_code)]
     pub fn requests(&self) -> usize {
         self.request_count.load(Ordering::SeqCst)
     }

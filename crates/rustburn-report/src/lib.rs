@@ -6,7 +6,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use askama::Template;
-use rustburn_core::model::{HistoricalSnapshot, HistoryRewriteState, RepoReport, Severity};
+use rustburn_core::model::{
+    Confidence, DimensionResult, FileScore, HistoricalSnapshot, HistoryRewriteState, RepoReport,
+    Severity,
+};
 
 /// HTML 报告模板
 #[derive(Template)]
@@ -299,6 +302,106 @@ impl<'a> ReportTemplate<'a> {
         sum / history.len() as f64
     }
 
+    // ---- 五维度辅助方法（v2：file.dimensions 固定顺序
+    //      [complexity, duplication, test, change_risk, dependency]）----
+    // 注意：askama 模板的 `loop.index0` 是 `&usize`，因此 idx 参数统一用引用。
+
+    /// 维度中文标签
+    fn dim_label(&self, idx: &usize) -> &'static str {
+        match *idx {
+            0 => "复杂度",
+            1 => "重复代码",
+            2 => "测试",
+            3 => "变更风险",
+            4 => "依赖",
+            _ => "未知",
+        }
+    }
+
+    /// 获取维度结果（越界返回空维度）
+    fn dim<'b>(&self, file: &'b FileScore, idx: &usize) -> Option<&'b DimensionResult> {
+        file.dimensions.get(*idx)
+    }
+
+    /// 维度风险分（越界返回 0）
+    fn dim_risk(&self, file: &FileScore, idx: &usize) -> f64 {
+        self.dim(file, idx).map(|d| d.risk_score).unwrap_or(0.0)
+    }
+
+    /// 维度原始值（越界返回 0）
+    fn dim_raw(&self, file: &FileScore, idx: &usize) -> f64 {
+        self.dim(file, idx).map(|d| d.raw_value).unwrap_or(0.0)
+    }
+
+    /// 维度风险档位颜色类（模板用：method 返回值无法自动引用）
+    fn dim_tier_class(&self, file: &FileScore, idx: &usize) -> &'static str {
+        self.risk_tier_class(&self.dim_risk(file, idx))
+    }
+
+    /// 维度风险等级文字（模板用）
+    fn dim_level_text(&self, file: &FileScore, idx: &usize) -> &'static str {
+        self.risk_level(&self.dim_risk(file, idx))
+    }
+
+    /// 维度置信度是否完整
+    fn dim_is_full(&self, file: &FileScore, idx: &usize) -> bool {
+        self.dim(file, idx)
+            .map(|d| d.confidence.is_full())
+            .unwrap_or(false)
+    }
+
+    /// 维度是否数据缺失
+    fn dim_is_missing(&self, file: &FileScore, idx: &usize) -> bool {
+        self.dim(file, idx)
+            .map(|d| d.is_data_missing())
+            .unwrap_or(false)
+    }
+
+    /// 维度是否不适用（被排除）
+    fn dim_is_excluded(&self, file: &FileScore, idx: &usize) -> bool {
+        self.dim(file, idx)
+            .map(|d| d.is_excluded())
+            .unwrap_or(false)
+    }
+
+    /// 维度置信度中文文本
+    fn dim_confidence_text(&self, file: &FileScore, idx: &usize) -> &'static str {
+        match self.dim(file, idx).map(|d| &d.confidence) {
+            Some(Confidence::Full) => "数据完整",
+            Some(Confidence::DataMissing(_)) => "数据缺失",
+            Some(Confidence::NotApplicable) => "不适用",
+            None => "无数据",
+        }
+    }
+
+    /// 维度置信度缺失原因（Full / 越界返回空串）
+    fn dim_confidence_reason(&self, file: &FileScore, idx: &usize) -> String {
+        match self.dim(file, idx).map(|d| &d.confidence) {
+            Some(Confidence::DataMissing(reason)) => reason.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// 维度置信度颜色类
+    fn dim_confidence_class(&self, file: &FileScore, idx: &usize) -> &'static str {
+        if self.dim_is_full(file, idx) {
+            "color-green"
+        } else if self.dim_is_excluded(file, idx) {
+            "color-muted"
+        } else {
+            "color-orange"
+        }
+    }
+
+    /// 维度是否被排除（用于展示"该维度未参与本次合成"提示）
+    fn dims_excluded_text(&self, file: &FileScore) -> String {
+        let excluded: Vec<&str> = (0..5)
+            .filter(|i| self.dim_is_excluded(file, i))
+            .map(|i| self.dim_label(&i))
+            .collect();
+        excluded.join("、")
+    }
+
     /// 截断字符串（替代 askama 的 truncate filter）
     fn truncate_str(&self, value: &str, len: usize) -> String {
         if value.char_indices().nth(len).is_none() {
@@ -442,8 +545,8 @@ pub fn write_report(report: &RepoReport, output_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use rustburn_core::model::{
-        AnalysisMetadata, ConsistencyReport, FilePercentileScores, FileRawMetrics, FileScore,
-        HistoryRewriteState, Language, RepoReport, Severity,
+        AnalysisMetadata, ConsistencyReport, FileRawMetrics, FileScore, HistoryRewriteState,
+        Language, RepoReport, Severity,
     };
 
     fn create_test_report() -> RepoReport {
@@ -475,6 +578,7 @@ mod tests {
     }
 
     fn create_test_file_score(path: &str, heat: f64) -> FileScore {
+        use rustburn_core::model::{Confidence, DimensionResult};
         FileScore {
             raw: FileRawMetrics {
                 path: path.to_string(),
@@ -495,16 +599,15 @@ mod tests {
                 dependency_data_incomplete: false,
                 parse_incomplete: false,
             },
-            percentiles: FilePercentileScores {
-                complexity_risk: 50.0,
-                history_risk: 50.0,
-                dependency_risk: 50.0,
-            },
-            dimension_values: rustburn_core::model::DimensionValues {
-                complexity_value: 20.0,
-                history_value: 30.0,
-                dependency_value: 0.0,
-            },
+            dimensions: vec![
+                DimensionResult {
+                    raw_value: 20.0,
+                    risk_score: 40.0,
+                    confidence: Confidence::Full,
+                    detail: serde_json::json!({}),
+                };
+                5
+            ],
             base_risk_score: heat,
             consistency: ConsistencyReport {
                 coverage_report_stale: false,

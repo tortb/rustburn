@@ -4,6 +4,21 @@
 
 rustburn 通过 GitHub Actions 实现自动化跨平台构建与发布。每次推送 `v*` 格式的 tag 时，workflow 会在 5 个平台上并行构建，生成 Release 资产，并自动创建 GitHub Release。
 
+## v2 算法重构发布注意事项
+
+v2 起评分模型从三维度重构为五维度（复杂度 / 重复代码 / 测试 / 变更风险 / 依赖），是 **JSON schema 破坏性变更**（`schema_version` 升级为 `2.0`，`FileScore` 移除了 `percentiles` / `dimension_values` 字段，改为 `dimensions` 五维度数组）。
+
+发布前除常规清单外，必须额外确认：
+
+- [ ] `cargo test --workspace` 通过，且以下验收测试全部命中：
+  - `analyzers::complexity::tests`（链式 / 表达式风格 / 真实嵌套三组深度用例）
+  - `analyzers::change_risk::tests::test_decay_prevents_monotonic_increase`（时间衰减，修复"只涨不跌"）
+  - `v2_acceptance_integration`（测试维度置信度 / mock 语言架构解耦 / scoring 静态检查）
+  - `duplication_integration`（结构哈希判重 A/B/C 三组验收）
+- [ ] 生成 HTML 报告后，第一屏内任意 top 风险文件能同时看到五个维度的独立分数（无需展开点击）
+- [ ] 离线模式扫描时，依赖维度显示为"数据缺失"且非 0 分，报告中带显著标注
+- [ ] 新增语言时只新增 `crates/rustburn-core/src/lang/<name>.rs` + 注册表一行，`analyzers/` 与 `scoring.rs` 零改动（有 `test_mock_language_architecture_decoupling` 保障）
+
 ## 发布架构
 
 ```

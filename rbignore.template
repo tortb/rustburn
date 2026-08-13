@@ -1,5 +1,0 @@
-# rustburn ignore rules (gitignore-style).
-# Edit this file to exclude files and directories from scanning.
-#
-# 注意：生成产物目录（target/、node_modules/、dist/、build/、*.generated.*）
-# 由内置默认规则排除，无需在此重复；如需包含它们，请使用 --include-generated。

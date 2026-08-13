@@ -984,24 +984,20 @@ svg { display: block; flex-shrink: 0; }
         </button>
         <div class="risk-card-body" data-file="{{ self.path_to_dom_id(file.raw.path) }}">
           <div class="formula-overview">
-            <div class="fo-title">三层公式中间值（百分位越高，该层对最终分数的贡献越大）</div>
+            <div class="fo-title">五个维度独立风险分（0-100，越高风险越大；综合参考分见 base/final）</div>
             <div class="fo-bars">
+              {% for i in 0..5 %}
               <div class="fo-row">
-                <span class="fo-label">复杂度</span>
-                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.complexity_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.complexity_risk, 0) }}"></div></div>
-                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.complexity_risk) }}</span>
+                <span class="fo-label">{{ self.dim_label(loop.index0) }}</span>
+                <div class="fo-bar"><div class="fo-bar-fill {{ self.dim_tier_class(file, loop.index0) }}" data-w="{{ self.fmt_f64val(self.dim_risk(file, loop.index0), 0) }}"></div></div>
+                <span class="fo-row-value">{{ self.fmt_f64val(self.dim_risk(file, loop.index0), 1) }} &middot; {{ self.dim_level_text(file, loop.index0) }}</span>
+                <span class="fo-conf {{ self.dim_confidence_class(file, loop.index0) }}" title="{{ self.dim_confidence_reason(file, loop.index0) }}">{{ self.dim_confidence_text(file, loop.index0) }}</span>
               </div>
-              <div class="fo-row">
-                <span class="fo-label">历史</span>
-                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.history_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.history_risk, 0) }}"></div></div>
-                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.history_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.history_risk) }}</span>
-              </div>
-              <div class="fo-row">
-                <span class="fo-label">依赖</span>
-                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.dependency_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.dependency_risk, 0) }}"></div></div>
-                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.dependency_risk) }}</span>
-              </div>
+              {% endfor %}
             </div>
+            {% if self.dims_excluded_text(file) != "" %}
+            <div class="fo-note">本次分析中 {{ self.dims_excluded_text(file) }} 维度不适用，已排除并重新分摊权重。</div>
+            {% endif %}
             <div class="fo-flow">
               <span>base <span class="fo-stage">{{ self.fmt_f64(file.base_risk_score, 1) }}</span></span>
               <span class="fo-op">&times;</span>
@@ -1014,7 +1010,7 @@ svg { display: block; flex-shrink: 0; }
                 <div class="detail-col">
                   <div class="detail-tabs" data-tabs>
                     <span class="detail-tab active" data-tab-idx="0">原始指标</span>
-                    <span class="detail-tab" data-tab-idx="1">百分位排名</span>
+                    <span class="detail-tab" data-tab-idx="1">维度明细</span>
                     <span class="detail-tab" data-tab-idx="2">趋势分析</span>
                     <span class="detail-tab" data-tab-idx="3">一致性检查</span>
                   </div>
@@ -1049,31 +1045,30 @@ svg { display: block; flex-shrink: 0; }
                     </div>
                   </div>
                   <div class="detail-pane" data-pane-idx="1">
-                    <div class="detail-section-title">百分位排名（越接近 100 表示越差）</div>
+                    <div class="detail-section-title">五个维度明细（风险分 0-100，越接近 100 越差）</div>
                     <div class="status-grid">
+                      {% for i in 0..5 %}
                       <div class="status-item">
-                        <span class="slabel">复杂度 %</span>
-                        <span class="mvalue {{ self.risk_color_class(file.percentiles.complexity_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</span>
+                        <span class="slabel">{{ self.dim_label(loop.index0) }}</span>
+                        <span class="mvalue {{ self.dim_tier_class(file, loop.index0) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64val(self.dim_risk(file, loop.index0), 1) }}</span>
                       </div>
-                      <div class="status-item">
-                        <span class="slabel">历史 %</span>
-                        <span class="mvalue {{ self.risk_color_class(file.percentiles.history_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</span>
-                      </div>
-                      <div class="status-item">
-                        <span class="slabel">依赖 %</span>
-                        <span class="mvalue {{ self.risk_color_class(file.percentiles.dependency_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</span>
-                      </div>
-                      <div class="status-item">
-                        <span class="slabel">维度汇总</span>
-                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:var(--accent)">C{{ self.fmt_f64(file.dimension_values.complexity_value, 0) }}/H{{ self.fmt_f64(file.dimension_values.history_value, 0) }}/D{{ self.fmt_f64(file.dimension_values.dependency_value, 0) }}</span>
-                      </div>
+                      {% endfor %}
                     </div>
-                    <div class="detail-section-title" style="margin-top:14px;">维度综合值（0-100）</div>
+                    <div class="detail-section-title" style="margin-top:14px;">维度原始值与置信度（0-100）</div>
                     <div class="metric-grid">
-                      <div class="metric-item"><span class="mlabel">复杂度维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.complexity_value, 2) }}</span></div>
-                      <div class="metric-item"><span class="mlabel">历史维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.history_value, 2) }}</span></div>
-                      <div class="metric-item"><span class="mlabel">依赖维度</span><span class="mvalue">{{ self.fmt_f64(file.dimension_values.dependency_value, 2) }}</span></div>
+                      {% for i in 0..5 %}
+                      <div class="metric-item">
+                        <span class="mlabel">{{ self.dim_label(loop.index0) }}（原始值 {{ self.fmt_f64val(self.dim_raw(file, loop.index0), 2) }}）</span>
+                        <span class="mvalue {{ self.dim_confidence_class(file, loop.index0) }}">{{ self.dim_confidence_text(file, loop.index0) }}</span>
+                      </div>
+                      {% endfor %}
                     </div>
+                    {% if self.dims_excluded_text(file) != "" %}
+                    <div class="detail-section-title" style="margin-top:14px;">被排除维度</div>
+                    <div style="padding:8px 12px;font-size:12px;color:var(--text-muted);background:var(--bg-deep);border:1px dashed var(--border-light);border-radius:var(--radius-xs);">
+                      {{ self.dims_excluded_text(file) }} 维度因语言暂不支持而被排除，最终分数基于其余维度重新加权。
+                    </div>
+                    {% endif %}
                   </div>
                   <div class="detail-pane" data-pane-idx="2">
                     <div class="detail-section-title">趋势分析（基础风险分历史变化）</div>
@@ -1143,7 +1138,7 @@ svg { display: block; flex-shrink: 0; }
                     <div class="formula-body open">
                       <div class="formula-stage">
                         <span class="stage-num">1</span>
-                        <span class="stage-label">基础风险分 = 复杂度 60% + 历史 30% + 依赖 10%（百分位 50% + 绝对阈值 50% 混合）+ 单一高风险维度惩罚</span>
+                        <span class="stage-label">基础风险分 = 复杂度 30% + 重复代码 15% + 测试 25% + 变更风险 20% + 依赖 10%（不适用维度重新分摊权重）+ 单一高风险维度惩罚</span>
                         <span class="stage-arrow">&rarr;</span>
                         <span class="stage-result" style="background:var(--accent-dim);color:var(--accent);">{{ self.fmt_f64(file.base_risk_score, 1) }}</span>
                       </div>
@@ -1324,9 +1319,9 @@ svg { display: block; flex-shrink: 0; }
       <h4>评分公式说明</h4>
       <p>每一个文件的技术债风险评分经历三个阶段，最终得到 0-100 区间的最终热力值。</p>
       <div class="formula-inline">
-        dimension_value = 归一化维度原始值<br>
-        percentile = 该文件在所有文件中的排名百分位<br>
-        base_risk = 复杂度 60% + 历史 30% + 依赖 10%（百分位 50% + 绝对阈值 50% 混合）+ 单一高风险维度惩罚<br>
+        每个文件在五个维度上各自得到独立风险分（0-100）：<br>
+        complexity（复杂度）/ duplication（重复代码）/ test（测试）/ change_risk（变更风险）/ dependency（依赖）<br>
+        base_risk = 复杂度 30% + 重复代码 15% + 测试 25% + 变更风险 20% + 依赖 10%（不适用维度重新分摊权重）+ 单一高风险维度惩罚<br>
         final_heat = base_risk * trend_coefficient（本版未启用，恒为 1.0）
       </div>
       <p style="margin-top:10px;">
@@ -1688,6 +1683,18 @@ const REPORT_DATA = {{report_data_json|safe}};
   }
   // Expose
   window._rbToggleFileDetail = toggleFileDetail;
+
+  // SPEC v2 §8-A：首屏默认展开第一个 Top 风险卡片，确保五个维度的独立分数
+  // 无需额外点击即可在同一屏幕内看到（综合参考分仅作辅助排序）。
+  document.addEventListener('DOMContentLoaded', function () {
+    var firstCard = document.querySelector('.risk-card');
+    if (firstCard && !firstCard.classList.contains('open')) {
+      firstCard.classList.add('open');
+      var trendCanvas = firstCard.querySelector('[data-pane-idx="2"] canvas[data-trend-file]');
+      if (trendCanvas) renderTrendForCanvas(trendCanvas);
+      bindDetailTabs(firstCard.querySelector('.detail-inner'));
+    }
+  });
 
   function bindDetailTabs(root) {
     var tabs = root.querySelectorAll('[data-tabs] .detail-tab');

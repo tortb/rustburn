@@ -8,6 +8,8 @@ use std::fmt;
 pub enum Language {
     Rust,
     JavaScript,
+    /// 极简 mock 语言（仅用于验证架构解耦，不会被实际扫描产生）
+    Mock,
     Unknown,
 }
 
@@ -16,15 +18,17 @@ impl fmt::Display for Language {
         match self {
             Language::Rust => write!(f, "rust"),
             Language::JavaScript => write!(f, "javascript"),
+            Language::Mock => write!(f, "mock"),
             Language::Unknown => write!(f, "unknown"),
         }
     }
 }
 
 /// 严重度级别。数值越大 = 风险越高。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    #[default]
     None,
     Low,
     Medium,
@@ -144,13 +148,82 @@ pub struct FileRawMetrics {
     pub parse_incomplete: bool,
 }
 
-/// 文件在各维度的 percentile 分数。
-/// 范围 0.0..=100.0，0 = 风险最低，100 = 风险最高。
+/// 维度置信度。
+///
+/// 语义约定（SPEC v2 §1.1 禁止事项 1.1-A）：
+/// 默认假设数据不完整，只有在明确验证过数据来源真实可靠后，才允许标记为 [Confidence::Full]。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "detail")]
+pub enum Confidence {
+    /// 数据来源经过验证，可信
+    Full,
+    /// 数据缺失，detail 必须携带具体原因（不允许空字符串或泛泛的 "missing"）
+    DataMissing(String),
+    /// 该语言/该场景不支持此维度
+    NotApplicable,
+}
+
+impl Confidence {
+    /// 是否数据完整可信。
+    pub fn is_full(&self) -> bool {
+        matches!(self, Confidence::Full)
+    }
+}
+
+impl fmt::Display for Confidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Confidence::Full => write!(f, "full"),
+            Confidence::DataMissing(reason) => write!(f, "data_missing: {}", reason),
+            Confidence::NotApplicable => write!(f, "not_applicable"),
+        }
+    }
+}
+
+/// 单个维度的分析结果（v2 架构）。
+///
+/// 五个维度互相独立，各自计算 raw_value / risk_score / confidence / detail，
+/// 由 scoring.rs 做加权合成。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilePercentileScores {
-    pub complexity_risk: f64,
-    pub history_risk: f64,
-    pub dependency_risk: f64,
+pub struct DimensionResult {
+    /// 维度原始值（用于报告透明展示与仓库均值填充）
+    pub raw_value: f64,
+    /// 维度独立风险分 0-100（越高风险越大），不是最终合成分
+    pub risk_score: f64,
+    /// 数据可信度
+    pub confidence: Confidence,
+    /// 中间值明细（JSON），供报告展示公式推导
+    pub detail: serde_json::Value,
+}
+
+impl DimensionResult {
+    /// 维度是否被排除（NotApplicable 时 scoring 需重新分摊权重）
+    pub fn is_excluded(&self) -> bool {
+        matches!(self.confidence, Confidence::NotApplicable)
+    }
+
+    /// 维度是否数据缺失（DataMissing 时 risk_score 使用仓库均值填充）
+    pub fn is_data_missing(&self) -> bool {
+        matches!(self.confidence, Confidence::DataMissing(_))
+    }
+}
+
+/// 五个维度的固定顺序。
+pub const DIMENSION_NAMES: [&str; 5] = [
+    "complexity",
+    "duplication",
+    "test",
+    "change_risk",
+    "dependency",
+];
+
+/// 维度在 [FileScore::dimensions] 中的固定下标。
+pub mod dimension_index {
+    pub const COMPLEXITY: usize = 0;
+    pub const DUPLICATION: usize = 1;
+    pub const TEST: usize = 2;
+    pub const CHANGE_RISK: usize = 3;
+    pub const DEPENDENCY: usize = 4;
 }
 
 /// 历史快照（某个 commit 时刻的评分）。
@@ -177,15 +250,13 @@ pub struct ConsistencyReport {
     pub coefficient: f64,
 }
 
-/// 单文件完整评分。
+/// 单文件完整评分（v2）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileScore {
     /// 原始指标
     pub raw: FileRawMetrics,
-    /// percentile 分数
-    pub percentiles: FilePercentileScores,
-    /// 维度综合值（用于报告透明度）
-    pub dimension_values: DimensionValues,
+    /// 五个维度的分析结果，固定顺序为 [DIMENSION_NAMES]
+    pub dimensions: Vec<DimensionResult>,
     /// 基础风险分数
     pub base_risk_score: f64,
     /// 一致性报告
@@ -272,17 +343,6 @@ pub struct RepoReport {
     pub analysis_metadata: AnalysisMetadata,
     /// 警告信息
     pub warnings: Vec<String>,
-}
-
-/// 维度综合值。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DimensionValues {
-    /// 复杂度综合值
-    pub complexity_value: f64,
-    /// 历史综合值
-    pub history_value: f64,
-    /// 依赖综合值
-    pub dependency_value: f64,
 }
 
 /// 严重度分数映射。

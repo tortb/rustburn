@@ -1,9 +1,17 @@
-pub mod model;
+//! rustburn-core：Git 历史 / AST / 复杂度 / 依赖 / 评分 / 数据模型。
+//!
+//! v2 架构：五个 [analyzers] 维度分析器通过 [lang] 语言适配层与
+//! [context] 分析上下文解耦，[scoring] 只做归一合成。
 
-/// rustburn-core 占位模块，将在后续 Phase 中实现。
+pub mod aggregate;
+pub mod analyzer;
+pub mod analyzers;
 pub mod complexity;
+pub mod context;
 pub mod dependency;
 pub mod git_history;
+pub mod lang;
+pub mod model;
 pub mod scoring;
 pub mod update;
 
