@@ -10,6 +10,14 @@ A single-command code technical debt analyzer that produces a self-contained HTM
 
 ## Installation
 
+### One-line install (GitHub Releases)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tortb/rustburn/master/install.sh | sh
+```
+
+The installer resolves the latest release dynamically, verifies the SHA256 checksum, and installs to `~/.local/bin/rb` (no sudo required). It aborts if download, checksum, or extraction fails, and never breaks an existing installation. If `~/.local/bin` is not on your PATH it prints a hint and never edits your shell configuration.
+
 ### Build from source
 
 ```sh
@@ -19,8 +27,6 @@ cargo build --release
 # The binary is at target/release/rb; copy it anywhere on your PATH
 install -m 755 target/release/rb ~/.local/bin/rb
 ```
-
-> The one-liner installer (`curl -fsSL https://rustburn.dev/install.sh | sh`, with SHA256 verification) ships with GitHub Releases.
 
 ## Quick start
 

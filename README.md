@@ -10,6 +10,14 @@
 
 ## 安装
 
+### 一键安装（GitHub Releases）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tortb/rustburn/master/install.sh | sh
+```
+
+安装脚本动态获取最新 Release，强制进行 SHA256 校验后安装到 `~/.local/bin/rb`（无需 sudo）。下载、校验、解压任一环节失败都会终止，且不会破坏已有安装；`~/.local/bin` 不在 PATH 时会给出提示，不会自动修改 shell 配置。
+
 ### 从源码构建
 
 ```sh
@@ -19,8 +27,6 @@ cargo build --release
 # 二进制位于 target/release/rb，可复制到 PATH 中的任意目录
 install -m 755 target/release/rb ~/.local/bin/rb
 ```
-
-> 一键安装脚本（`curl -fs | sh`，含 SHA256 校验）随 GitHub Release 发布。
 
 ## 快速开始
 
