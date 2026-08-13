@@ -5,6 +5,7 @@ pub mod complexity;
 pub mod dependency;
 pub mod git_history;
 pub mod scoring;
+pub mod update;
 
 /// 调试日志是否启用（环境变量 `RB_DEBUG` 非空）。
 ///

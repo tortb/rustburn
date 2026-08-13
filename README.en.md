@@ -34,9 +34,11 @@ install -m 755 target/release/rb ~/.local/bin/rb
 rb                 # Scan the current directory, write rustburn-report.html
 rb scan ./project  # Scan a specific directory
 rb --json          # Write a JSON report (default rustburn-report.json)
-rb --offline       # Offline mode (no network requests)
+rb --offline       # Offline mode (no network requests, update check disabled too)
 rb --fail-above 70 # Exit with code 1 when the score exceeds 70 (CI-friendly)
 rb --ignore target # Exclude a path (repeatable)
+rb update          # Check and update to the latest GitHub release (interactive confirmation)
+rb --version       # Version number + git commit hash + build date
 ```
 
 ### Options
@@ -114,10 +116,25 @@ Percentiles are **relative ranks** within the repository: even if an attacker di
 - **Trend history (v1)**: per-commit recomputation is not implemented yet; `trend_coefficient` is 1.0 without valid history (marked "insufficient trend data" in the report)
 - **Offline mode**: the dependency dimension is marked as incomplete (Unknown) rather than treated as 0
 
+## Security commitment
+
+**We never silently replace your executable.** Every update action requires a visible confirmation step:
+
+- `rb update` first shows the current / latest version and a release notes summary, and only proceeds after you type `y` (`--yes` skips the prompt);
+- The new binary is downloaded to a temporary file and hard-verified against the official `SHA256SUMS` before being installed with an atomic `rename`;
+- On checksum or network failure the tool reports a clear error and cleans up temporary files, **never overwriting the existing executable**;
+- During the atomic replace the target is always either the old or the new binary — never a partial file.
+
+The post-scan version check is equally conservative: it runs at most once per 24 hours, uses a 2-second network timeout, fails silently, and only prints a one-line hint when a newer version is found — it never takes any automatic action. Disable it entirely with `--offline` or `RUSTBURN_NO_UPDATE_CHECK=1`.
+
 ## Privacy
 
 rustburn never uploads source code, file contents, commit messages, author emails, or repository paths.
-The only network request is the OSV dependency lookup (sending only package name / ecosystem / version), fully disableable via `--offline`.
+The only network requests are:
+- the OSV dependency lookup (sending only package name / ecosystem / version);
+- the post-scan version check (fetching public latest-release info from the GitHub Releases API).
+
+Both are fully disableable via `--offline`.
 
 ## Development
 

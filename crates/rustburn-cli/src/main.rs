@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -20,11 +20,25 @@ use rustburn_core::scoring::{
     calculate_final_heat_score, calculate_percentile_scores, calculate_repo_total_heat_score,
     calculate_top_risk_files, calculate_trend_coefficient,
 };
+use rustburn_core::update::{
+    cache_dir, check_update_silently, is_newer, latest_release, notes_summary, platform_target,
+    update_check_enabled, update_to_latest, DEFAULT_API_URL, DEFAULT_DL_BASE,
+};
 use rustburn_report::write_report;
+
+/// 版本信息：版本号 + git commit 短哈希 + 构建日期（由 build.rs 注入）。
+const RB_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (commit: ",
+    env!("RUSTBURN_GIT_COMMIT"),
+    ", built: ",
+    env!("RUSTBURN_BUILD_DATE"),
+    ")"
+);
 
 /// rustburn — 一条命令分析代码仓库中的技术债与潜在风险。
 #[derive(Parser)]
-#[command(name = "rb", version, about)]
+#[command(name = "rb", version = RB_VERSION, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -37,7 +51,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// 离线模式（禁止网络请求）
+    /// 离线模式（禁止网络请求，同时禁用更新检测）
     #[arg(long, global = true)]
     offline: bool,
 
@@ -65,6 +79,18 @@ enum Commands {
         /// 仓库路径
         #[arg(default_value = ".")]
         path: String,
+    },
+    /// 检查并更新到 GitHub 最新发布版本
+    Update {
+        /// 跳过交互确认，直接更新
+        #[arg(long)]
+        yes: bool,
+        /// （测试/调试用）自定义 GitHub API URL
+        #[arg(long, hide = true)]
+        api_url: Option<String>,
+        /// （测试/调试用）自定义 release 下载基址
+        #[arg(long, hide = true)]
+        dl_base: Option<String>,
     },
 }
 
@@ -260,8 +286,20 @@ fn map_dependencies_to_files(
 fn run() -> Result<(f64, Option<f64>), String> {
     let cli = Cli::parse();
 
+    // `rb update` 子命令独立处理
+    if let Some(Commands::Update {
+        yes,
+        api_url,
+        dl_base,
+    }) = &cli.command
+    {
+        run_update(*yes, api_url.as_deref(), dl_base.as_deref())?;
+        return Ok((0.0, None));
+    }
+
     let path = match &cli.command {
         Some(Commands::Scan { path }) => path.clone(),
+        Some(Commands::Update { .. }) => unreachable!("handled above"),
         None => ".".to_string(),
     };
 
@@ -531,7 +569,104 @@ fn run() -> Result<(f64, Option<f64>), String> {
     eprintln!("Report:");
     eprintln!("  {}", output);
 
+    // scan 完成后做一次静默的新版本检查（不影响 exit code）
+    maybe_check_update_async(cli.offline);
+
     Ok((repo_total, cli.fail_above))
+}
+
+/// `rb update`：检查最新版本，用户确认后下载、校验并原子替换。
+fn run_update(yes: bool, api_url: Option<&str>, dl_base: Option<&str>) -> Result<(), String> {
+    let api_url = api_url.unwrap_or(DEFAULT_API_URL);
+    let dl_base = dl_base.unwrap_or(DEFAULT_DL_BASE);
+
+    let release = latest_release(api_url, Duration::from_secs(15))
+        .map_err(|e| format!("无法获取最新版本信息: {}", e))?;
+    let current = env!("CARGO_PKG_VERSION");
+
+    println!("当前版本: {}", current);
+    println!("最新版本: {}", release.tag_name);
+    println!("--- release notes 摘要 ---");
+    println!("{}", notes_summary(&release.body, 400));
+
+    if !is_newer(&release.tag_name, current) {
+        println!("已是最新版本。");
+        return Ok(());
+    }
+
+    if !yes && !confirm_update(&release.tag_name)? {
+        println!("已取消更新。");
+        return Ok(());
+    }
+
+    let target = platform_target().ok_or_else(|| "当前平台不受支持，无法自动更新。".to_string())?;
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {}", e))?;
+
+    update_to_latest(
+        dl_base,
+        &release.tag_name,
+        &target,
+        &exe,
+        Duration::from_secs(60),
+    )
+    .map_err(|e| format!("更新失败（原可执行文件未被修改）: {}", e))?;
+
+    println!(
+        "已更新到 {}。重新运行 rb --version 确认。",
+        release.tag_name
+    );
+    Ok(())
+}
+
+/// 交互确认：输入 y/yes 才继续。
+fn confirm_update(version: &str) -> Result<bool, String> {
+    use std::io::Write;
+    print!("确认升级到 {}？[y/N] ", version);
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
+}
+
+/// scan 结束后的一次性后台更新检查。
+///
+/// - 通过 `--offline` 或 `RUSTBURN_NO_UPDATE_CHECK=1` 完全禁用；
+/// - 24 小时内不重复检测（~/.cache/rustburn/last_check）；
+/// - 网络超时 2 秒，失败静默；
+/// - 仅在发现新版本时输出一行提示，不做任何自动操作。
+fn maybe_check_update_async(offline: bool) {
+    if !update_check_enabled(offline) {
+        return;
+    }
+    let Some(cache) = cache_dir() else {
+        return;
+    };
+
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let current_for_thread = current.clone();
+    let cache_thread = cache.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = check_update_silently(
+            &cache_thread,
+            Duration::from_secs(24 * 3600),
+            DEFAULT_API_URL,
+            Duration::from_secs(2),
+            &current_for_thread,
+        );
+        let _ = tx.send(result);
+    });
+
+    // 等待结果最多 2 秒，给提示输出机会；超时则静默放弃（进程即将退出）
+    if let Ok(Ok(Some(latest))) = rx.recv_timeout(Duration::from_secs(2)) {
+        eprintln!(
+            "[rustburn] 发现新版本 {}（当前 {}）。运行 `rb update` 查看并升级。",
+            latest, current
+        );
+    }
 }
 
 fn main() {

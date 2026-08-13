@@ -186,8 +186,16 @@ struct OsvVuln {
     database_specific: Option<serde_json::Value>,
 }
 
-/// 查询 OSV API
+/// 查询 OSV API（默认官方端点）。
 pub fn query_osv(deps: &[Dependency]) -> Result<Vec<DependencyFinding>, DependencyError> {
+    query_osv_with_base(deps, "https://api.osv.dev")
+}
+
+/// 查询 OSV API（可指定 base URL，供测试 mock 使用）。
+pub fn query_osv_with_base(
+    deps: &[Dependency],
+    base_url: &str,
+) -> Result<Vec<DependencyFinding>, DependencyError> {
     if deps.is_empty() {
         return Ok(Vec::new());
     }
@@ -221,7 +229,7 @@ pub fn query_osv(deps: &[Dependency]) -> Result<Vec<DependencyFinding>, Dependen
             serde_json::to_string(&request).map_err(|e| DependencyError::Parse(e.to_string()))?;
 
         let response = client
-            .post("https://api.osv.dev/v1/querybatch")
+            .post(&format!("{}/v1/querybatch", base_url))
             .set("Content-Type", "application/json")
             .send_string(&json_body);
 
@@ -244,7 +252,7 @@ pub fn query_osv(deps: &[Dependency]) -> Result<Vec<DependencyFinding>, Dependen
                     ));
                 }
 
-                enrich_findings(&mut findings);
+                enrich_findings(&mut findings, base_url);
                 return Ok(findings);
             }
             Err(e) => {
@@ -279,10 +287,10 @@ struct OsvVulnDetail {
 /// 补全漏洞摘要与真实严重度。
 ///
 /// 对批量查询结果中每个去重后的漏洞 id 再发一次
-/// `GET https://api.osv.dev/v1/vulns/{id}`，用官方返回的 summary 填充报告，
+/// `GET {base_url}/v1/vulns/{id}`，用官方返回的 summary 填充报告，
 /// 避免报告中出现 ID 真实但摘要为空的记录。
 /// 单个详情请求失败时保留批量结果（summary 为空、严重度标记为估算）。
-fn enrich_findings(findings: &mut [DependencyFinding]) {
+fn enrich_findings(findings: &mut [DependencyFinding], base_url: &str) {
     use std::collections::{HashMap, HashSet};
 
     if findings.is_empty() {
@@ -306,10 +314,7 @@ fn enrich_findings(findings: &mut [DependencyFinding]) {
     let mut fetched_ok = 0usize;
     let mut fetched_fail = 0usize;
     for id in &ids {
-        match client
-            .get(&format!("https://api.osv.dev/v1/vulns/{}", id))
-            .call()
-        {
+        match client.get(&format!("{}/v1/vulns/{}", base_url, id)).call() {
             Ok(resp) => match resp.into_string() {
                 Ok(body) => {
                     if let Ok(detail) = serde_json::from_str::<OsvVulnDetail>(&body) {

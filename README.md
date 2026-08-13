@@ -34,9 +34,11 @@ install -m 755 target/release/rb ~/.local/bin/rb
 rb                 # 扫描当前目录，生成 rustburn-report.html
 rb scan ./project  # 扫描指定目录
 rb --json          # 输出 JSON 报告（默认 rustburn-report.json）
-rb --offline       # 离线模式（禁止任何网络请求）
+rb --offline       # 离线模式（禁止任何网络请求，同时禁用更新检测）
 rb --fail-above 70 # 分数超过 70 时退出码 1（可用于 CI）
 rb --ignore target # 临时排除路径（可重复）
+rb update          # 检查并更新到 GitHub 最新发布版本（需交互确认）
+rb --version       # 版本号 + git commit 短哈希 + 构建日期
 ```
 
 ### 参数
@@ -114,10 +116,25 @@ rustburn 默认**不忽略**任何目录（包括 `.git/`、`target/`、`node_mo
 - **趋势历史（v1）**：尚未实现历史 commit 的逐点重算，无有效历史时 `trend_coefficient` 取 1.0（报告标记"趋势数据不足"）
 - **离线模式**：依赖漏洞维度标记为数据不完整（Unknown），不会当作 0 处理
 
+## 安全承诺
+
+**绝不静默替换你的可执行文件。** 任何更新动作都有用户可见的确认步骤：
+
+- `rb update` 先展示当前版本 / 最新版本与 release notes 摘要，必须输入 `y` 确认才继续（`--yes` 可跳过确认）；
+- 新版本下载到临时文件，与官方 `SHA256SUMS` 强制比对，校验通过后才用 `rename` 原子替换；
+- 校验失败 / 网络失败会明确报错并清理临时文件，**绝不覆盖现有可执行文件**；
+- 原子替换期间任何时刻目标文件要么是旧版本、要么是新版本，不会出现残缺二进制。
+
+扫描结束后的版本检测同样克制：24 小时内不重复检查、网络超时 2 秒、失败静默，检测到新版本时仅在终端输出一行提示，不做任何自动操作；可通过 `--offline` 或 `RUSTBURN_NO_UPDATE_CHECK=1` 完全禁用。
+
 ## 隐私
 
 rustburn 不上传源码、文件内容、commit message、作者邮箱或仓库路径。
-唯一的网络请求是对 OSV API 的依赖漏洞查询（仅发送包名 / 生态 / 版本），可通过 `--offline` 完全关闭。
+唯一的网络请求包括：
+- OSV API 依赖漏洞查询（仅发送包名 / 生态 / 版本）；
+- 扫描结束后的版本检测（仅请求 GitHub Releases API 的公开最新版本信息）。
+
+两者均可通过 `--offline` 完全关闭。
 
 ## 开发
 

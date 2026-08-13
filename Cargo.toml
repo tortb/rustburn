@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 
@@ -32,3 +32,8 @@ insta = "1"
 tempfile = "3"
 # 文件过滤：读取并遵守 .gitignore/.ignore/.rbignore，替代手写过滤逻辑
 ignore = "0.4"
+# 更新机制：SHA256 校验与 tar.gz/zip 解压
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+zip = "2"
