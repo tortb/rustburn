@@ -13,6 +13,12 @@ A single-command code technical debt analyzer that produces a self-contained HTM
 ### One-line install (GitHub Releases)
 
 ```sh
+curl -fsSL https://rb.tor.hk/install.sh | sh
+```
+
+Or via the GitHub raw URL (identical content):
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/tortb/rustburn/master/install.sh | sh
 ```
 
@@ -165,14 +171,19 @@ Percentiles are **relative ranks** within the repository: even if an attacker di
 
 ## Security commitment
 
-**We never silently replace your executable.** Every update action requires a visible confirmation step:
+**We never silently replace your executable.** Every update action requires a visible confirmation step.
 
+### Updates always require explicit confirmation (never silent auto-update)
+
+- rustburn **never** auto-updates and **never** replaces its binary in the background;
 - `rb update` first shows the current / latest version and a release notes summary, and only proceeds after you type `y` (`--yes` skips the prompt);
-- The new binary is downloaded to a temporary file and hard-verified against the official `SHA256SUMS` before being installed with an atomic `rename`;
-- On checksum or network failure the tool reports a clear error and cleans up temporary files, **never overwriting the existing executable**;
-- During the atomic replace the target is always either the old or the new binary — never a partial file.
+- The post-scan version check is purely informational: it runs at most once per 24 hours, uses a 2-second network timeout, fails silently, and only prints a one-line "run `rb update` to view and upgrade" hint when a newer version is found — it **never takes any automatic action**. Disable it entirely with `--offline` or `RUSTBURN_NO_UPDATE_CHECK=1`.
 
-The post-scan version check is equally conservative: it runs at most once per 24 hours, uses a 2-second network timeout, fails silently, and only prints a one-line hint when a newer version is found — it never takes any automatic action. Disable it entirely with `--offline` or `RUSTBURN_NO_UPDATE_CHECK=1`.
+### Atomic replacement (never delete-then-write)
+
+- The new binary is downloaded to a temporary file **in the same directory as the target**, hard-verified against the official `SHA256SUMS`, and only then installed via `rename`;
+- Same-directory `rename` is atomic: at any moment the target is either the old or the new binary — there is **no delete-then-write window**, so an interrupted update can never leave a partial binary;
+- Checksum / network / permission failures all report a clear error, clean up temporary files, and **never overwrite the existing executable** (on Windows, `rename` fails safely when the target exists, again without overwriting).
 
 ## Privacy
 

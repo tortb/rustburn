@@ -1,0 +1,9 @@
+# rustburn ignore rules (gitignore-style).
+# Edit this file to exclude files and directories from scanning.
+#
+# 注意：即使仓库没有 .rbignore，以下生成产物目录也会被默认排除：
+#   target/  node_modules/  dist/  build/  *.generated.*
+# 如需包含它们，请使用 --include-generated。
+target/
+dist/
+out/
