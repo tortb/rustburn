@@ -6,7 +6,7 @@
 
 use crate::model::{
     DimensionValues, FilePercentileScores, FileRawMetrics, FileScore, HistoricalSnapshot,
-    HistoryRewriteState, Severity,
+    HistoryRewriteState,
 };
 
 /// 计算维度综合值。
@@ -22,41 +22,53 @@ pub fn calculate_dimension_values(
     max_incident_count: u32,
     max_cve_count: u32,
 ) -> DimensionValues {
-    // 复杂度综合值
-    let complexity_value = metrics.cyclomatic_complexity as f64 * 0.4
+    DimensionValues {
+        complexity_value: calculate_complexity_value(metrics),
+        history_value: calculate_history_value(
+            metrics,
+            max_commit_count,
+            max_author_count,
+            max_incident_count,
+        ),
+        dependency_value: calculate_dependency_value(metrics, max_cve_count),
+    }
+}
+
+/// 复杂度维度综合值（spec §68）。
+fn calculate_complexity_value(metrics: &FileRawMetrics) -> f64 {
+    let value = metrics.cyclomatic_complexity as f64 * 0.4
         + metrics.max_if_nesting_depth as f64 * 15.0 * 0.4
         + metrics.avg_function_length * 0.2;
+    value.clamp(0.0, 100.0)
+}
 
-    // 历史综合值（需要归一化到 0-100）
+/// 历史维度综合值（spec §68，各指标归一化到 0-100）。
+fn calculate_history_value(
+    metrics: &FileRawMetrics,
+    max_commit_count: u32,
+    max_author_count: u32,
+    max_incident_count: u32,
+) -> f64 {
     let normalized_commit_count = normalize_value(metrics.commit_count, max_commit_count);
     let normalized_authors = normalize_value(metrics.distinct_authors, max_author_count);
     let normalized_incidents = normalize_value(metrics.incident_commit_count, max_incident_count);
     let normalized_recency = calculate_recency_risk(metrics.last_modified_days_ago);
 
-    let history_value = normalized_commit_count * 0.35
+    let value = normalized_commit_count * 0.35
         + normalized_authors * 0.10
         + normalized_incidents * 0.45
         + normalized_recency * 0.10;
+    value.clamp(0.0, 100.0)
+}
 
-    // 依赖综合值
-    let severity_score = match metrics.max_cve_severity {
-        Severity::None => 0.0,
-        Severity::Low => 25.0,
-        Severity::Medium => 50.0,
-        Severity::High => 75.0,
-        Severity::Critical => 100.0,
-    };
+/// 依赖维度综合值（spec §68）。
+fn calculate_dependency_value(metrics: &FileRawMetrics, max_cve_count: u32) -> f64 {
+    let severity_score = metrics.max_cve_severity.to_score();
     let normalized_cve_count = normalize_value(metrics.cve_count, max_cve_count);
     let staleness_score = metrics.dependency_staleness * 100.0;
 
-    let dependency_value =
-        severity_score * 0.60 + normalized_cve_count * 0.25 + staleness_score * 0.15;
-
-    DimensionValues {
-        complexity_value: complexity_value.clamp(0.0, 100.0),
-        history_value: history_value.clamp(0.0, 100.0),
-        dependency_value: dependency_value.clamp(0.0, 100.0),
-    }
+    let value = severity_score * 0.60 + normalized_cve_count * 0.25 + staleness_score * 0.15;
+    value.clamp(0.0, 100.0)
 }
 
 /// 将值归一化到 0-100 范围。
@@ -94,16 +106,8 @@ pub fn calculate_percentile_scores(
     _metrics: &FileRawMetrics,
     all_dimension_values: &[DimensionValues],
 ) -> FilePercentileScores {
-    if all_dimension_values.is_empty() {
-        return FilePercentileScores {
-            complexity_risk: 50.0,
-            history_risk: 50.0,
-            dependency_risk: 50.0,
-        };
-    }
-
-    // 单文件仓库特殊处理
-    if all_dimension_values.len() == 1 {
+    // 无数据或单文件仓库：无法计算相对排名，统一返回 50
+    if all_dimension_values.len() <= 1 {
         return FilePercentileScores {
             complexity_risk: 50.0,
             history_risk: 50.0,
@@ -127,19 +131,16 @@ pub fn calculate_percentile_scores(
 
     // 计算当前文件的维度值
     let current_complexity = all_dimension_values
-        .iter()
+        .first()
         .map(|d| d.complexity_value)
-        .next()
         .unwrap_or(0.0);
     let current_history = all_dimension_values
-        .iter()
+        .first()
         .map(|d| d.history_value)
-        .next()
         .unwrap_or(0.0);
     let current_dependency = all_dimension_values
-        .iter()
+        .first()
         .map(|d| d.dependency_value)
-        .next()
         .unwrap_or(0.0);
 
     FilePercentileScores {
@@ -286,41 +287,40 @@ pub fn calculate_final_heat_score(base_risk_score: f64, trend_coefficient: f64) 
 /// - repo_total_heat_score = weighted_mean + top_5pct_penalty
 /// - clamp(repo_total_heat_score, 0, 100)
 pub fn calculate_repo_total_heat_score(files: &[FileScore]) -> f64 {
-    if files.is_empty() {
-        return 0.0;
-    }
-
-    // 计算总 LOC
     let total_loc: u32 = files.iter().map(|f| f.raw.loc).sum();
 
+    // 无文件或无有效 LOC 时直接返回 0
     if total_loc == 0 {
         return 0.0;
     }
 
-    // 计算 LOC 加权平均
-    let weighted_mean: f64 = files
+    let weighted_mean = calculate_loc_weighted_mean(files, total_loc);
+    let top_5pct_penalty = calculate_top_5pct_penalty(files);
+
+    (weighted_mean + top_5pct_penalty).clamp(0.0, 100.0)
+}
+
+/// 按 LOC 加权平均 final_heat_score（spec §85）。
+fn calculate_loc_weighted_mean(files: &[FileScore], total_loc: u32) -> f64 {
+    files
         .iter()
-        .map(|f| {
-            let file_loc_ratio = f.raw.loc as f64 / total_loc as f64;
-            f.final_heat_score * file_loc_ratio
-        })
-        .sum();
+        .map(|f| f.final_heat_score * f.raw.loc as f64 / total_loc as f64)
+        .sum()
+}
 
-    // 计算 Top 5% 惩罚
-    let top_risk_files = get_top_risk_files(files);
-    let top_files_avg: f64 = if top_risk_files.is_empty() {
-        0.0
-    } else {
-        top_risk_files
-            .iter()
-            .map(|f| f.final_heat_score)
-            .sum::<f64>()
-            / top_risk_files.len() as f64
-    };
-    let top_5pct_penalty = top_files_avg * 0.2;
+/// Top 5% 文件平均分 * 0.2 惩罚（spec §87）。
+fn calculate_top_5pct_penalty(files: &[FileScore]) -> f64 {
+    let top_risk_files = calculate_top_risk_files(files);
+    if top_risk_files.is_empty() {
+        return 0.0;
+    }
 
-    let repo_total = weighted_mean + top_5pct_penalty;
-    repo_total.clamp(0.0, 100.0)
+    let top_files_avg: f64 = top_risk_files
+        .iter()
+        .map(|f| f.final_heat_score)
+        .sum::<f64>()
+        / top_risk_files.len() as f64;
+    top_files_avg * 0.2
 }
 
 /// 获取风险最高的文件（Top 5%）。
@@ -329,7 +329,7 @@ pub fn calculate_repo_total_heat_score(files: &[FileScore]) -> f64 {
 /// - 数量：ceil(file_count * 0.05)，最少 1
 /// - 按 final_heat_score 降序
 /// - 分数相同则按路径字典序升序
-pub fn get_top_risk_files(files: &[FileScore]) -> Vec<FileScore> {
+pub fn calculate_top_risk_files(files: &[FileScore]) -> Vec<FileScore> {
     if files.is_empty() {
         return Vec::new();
     }
@@ -350,7 +350,7 @@ pub fn get_top_risk_files(files: &[FileScore]) -> Vec<FileScore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ConsistencyReport, Language};
+    use crate::model::{ConsistencyReport, Language, Severity};
 
     fn create_test_metrics() -> FileRawMetrics {
         FileRawMetrics {
@@ -618,7 +618,7 @@ mod tests {
             create_test_file_score("e.rs", 100, 10.0),
         ];
 
-        let top = get_top_risk_files(&files);
+        let top = calculate_top_risk_files(&files);
         assert_eq!(top.len(), 1); // 5 * 0.05 = 0.25, ceil = 1
         assert_eq!(top[0].raw.path, "d.rs");
         assert_eq!(top[0].final_heat_score, 90.0);
@@ -632,7 +632,7 @@ mod tests {
             create_test_file_score("c.rs", 100, 50.0),
         ];
 
-        let top = get_top_risk_files(&files);
+        let top = calculate_top_risk_files(&files);
         // 分数相同时应按路径字典序
         assert_eq!(top[0].raw.path, "a.rs");
     }

@@ -88,35 +88,35 @@ fn build_rename_map(repo: &Repository, max_commits: u32) -> HashMap<String, Stri
         }
 
         for delta in diff.deltas() {
-            if delta.status() == git2::Delta::Renamed {
-                let old_path = delta
-                    .old_file()
-                    .path()
-                    .map(|p| p.to_string_lossy().into_owned());
-                let new_path = delta
-                    .new_file()
-                    .path()
-                    .map(|p| p.to_string_lossy().into_owned());
+            if delta.status() != git2::Delta::Renamed {
+                continue;
+            }
 
-                if let (Some(old), Some(new)) = (old_path, new_path) {
-                    // 如果 new 已经重命名到更新路径，进行链式跟踪
-                    let final_path = rename_map.get(&new).cloned().unwrap_or(new);
-                    rename_map.insert(old.clone(), final_path.clone());
+            let old = delta
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
+            let new = delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
 
-                    // 中间路径也指向最终路径
-                    let mut current = old;
-                    while let Some(next) = rename_map.get(&current) {
-                        if *next == final_path {
-                            break;
-                        }
-                        current = next.clone();
-                    }
-                }
+            if let (Some(old), Some(new)) = (old, new) {
+                register_rename(&old, &new, &mut rename_map);
             }
         }
     }
 
     rename_map
+}
+
+/// 注册一次 rename：旧路径指向新路径的最终目标（支持连续重命名链 a → b → c）。
+fn register_rename(old: &str, new: &str, rename_map: &mut HashMap<String, String>) {
+    let final_path = rename_map
+        .get(new)
+        .cloned()
+        .unwrap_or_else(|| new.to_string());
+    rename_map.insert(old.to_string(), final_path);
 }
 
 /// 创建从 HEAD 开始的 revwalk。
@@ -207,17 +207,102 @@ pub fn analyze_git_history(
     // 构建 rename map
     let rename_map = build_rename_map(&repo, max_commits);
 
-    let mut revwalk = head_revwalk(&repo)?;
+    // 收集各文件的 commit 历史指标
+    let (history, history_truncated) = collect_history(&repo, max_commits, &rename_map)?;
 
-    // 按文件跟踪数据
-    let mut file_commits: HashMap<String, u32> = HashMap::new();
-    let mut file_authors: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut file_incidents: HashMap<String, u32> = HashMap::new();
-    let mut file_last_modified: HashMap<String, i64> = HashMap::new(); // unix timestamp
+    // 从 HEAD tree 生成最终指标
+    let results = build_results(&repo, &rename_map, &history);
+
+    Ok((results, history_truncated, history_rewrite))
+}
+
+/// 单个 commit 的 diff 中涉及的唯一文件路径（去重，按 rename 后的规范路径）。
+fn modified_files_in_diff(
+    diff: &git2::Diff,
+    rename_map: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut modified_files: HashSet<String> = HashSet::new();
+
+    for delta in diff.deltas() {
+        // 跳过二进制文件
+        if delta.new_file().is_binary() {
+            continue;
+        }
+
+        // 获取新文件的路径并处理路径重命名
+        let path = match delta.new_file().path() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => continue,
+        };
+        let canonical_path = rename_map
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+
+        modified_files.insert(canonical_path);
+    }
+
+    modified_files
+}
+
+/// 按文件跟踪的 commit 历史指标。
+struct FileHistory {
+    commits: HashMap<String, u32>,
+    authors: HashMap<String, HashSet<String>>,
+    incidents: HashMap<String, u32>,
+    last_modified: HashMap<String, i64>, // unix timestamp
+}
+
+impl FileHistory {
+    fn new() -> Self {
+        Self {
+            commits: HashMap::new(),
+            authors: HashMap::new(),
+            incidents: HashMap::new(),
+            last_modified: HashMap::new(),
+        }
+    }
+
+    /// 记录一个文件在此 commit 中发生修改（同一 commit 同一文件只计 1 次）。
+    fn record(&mut self, path: &str, commit_time: i64, author: &str, is_incident: bool) {
+        // commit count
+        *self.commits.entry(path.to_string()).or_insert(0) += 1;
+
+        // authors
+        self.authors
+            .entry(path.to_string())
+            .or_default()
+            .insert(author.to_string());
+
+        // incident commits
+        if is_incident {
+            *self.incidents.entry(path.to_string()).or_insert(0) += 1;
+        }
+
+        // last modified
+        if self
+            .last_modified
+            .get(path)
+            .is_none_or(|ts| *ts < commit_time)
+        {
+            self.last_modified.insert(path.to_string(), commit_time);
+        }
+    }
+}
+
+/// 遍历 commit 历史，收集每个文件的 commit 指标。
+///
+/// 空 commit（未修改任何源码文件）会被跳过，但仍消耗 processed_commits 计数。
+fn collect_history(
+    repo: &Repository,
+    max_commits: u32,
+    rename_map: &HashMap<String, String>,
+) -> Result<(FileHistory, bool), anyhow::Error> {
+    let mut revwalk = head_revwalk(repo)?;
+
+    let mut history = FileHistory::new();
     let mut processed_commits: u32 = 0;
     let mut history_truncated = false;
-
-    let now = Utc::now();
 
     while let Some(oid) = revwalk.next().transpose().ok().flatten() {
         if processed_commits >= max_commits {
@@ -233,8 +318,7 @@ pub fn analyze_git_history(
 
         let commit_time = commit.time().seconds();
         let author = normalize_author_email(commit.author().email());
-        let msg = commit.message().unwrap_or("");
-        let is_incident = is_incident_commit(msg);
+        let is_incident = is_incident_commit(commit.message().unwrap_or(""));
 
         let tree = match commit.tree() {
             Ok(t) => t,
@@ -258,94 +342,63 @@ pub fn analyze_git_history(
         }
 
         // 收集此 commit 中所有被修改的唯一文件路径（去重）
-        let mut modified_files: HashSet<String> = HashSet::new();
+        let modified_files = modified_files_in_diff(&diff, rename_map);
 
-        for delta in diff.deltas() {
-            // 获取新文件的路径
-            let file_path = delta
-                .new_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned());
-
-            if let Some(ref path) = file_path {
-                // 检查是否为源码文件（非二进制）
-                if delta.new_file().is_binary() {
-                    continue;
-                }
-
-                // 处理路径重命名
-                let canonical_path = rename_map
-                    .get(path)
-                    .cloned()
-                    .unwrap_or_else(|| path.clone());
-
-                modified_files.insert(canonical_path);
-            }
-        }
-
-        // 空 commit 跳过
+        // 空 commit 过滤：未修改任何源码文件的 commit 不参与统计
         if modified_files.is_empty() {
             continue;
         }
 
         // 对每个唯一文件路径，只增加一次 commit_count 和 incident_commit_count
         for canonical_path in modified_files {
-            // commit count：同一 commit 中无论修改多少次同一文件，只计 1 次
-            *file_commits.entry(canonical_path.clone()).or_insert(0) += 1;
-
-            // authors
-            file_authors
-                .entry(canonical_path.clone())
-                .or_default()
-                .insert(author.clone());
-
-            // incident commits（同一 commit 同一文件只计 1 次）
-            if is_incident {
-                *file_incidents.entry(canonical_path.clone()).or_insert(0) += 1;
-            }
-
-            // last modified
-            let existing = file_last_modified.get(&canonical_path).copied();
-            if existing.is_none() || existing.unwrap() < commit_time {
-                file_last_modified.insert(canonical_path.clone(), commit_time);
-            }
+            history.record(&canonical_path, commit_time, &author, is_incident);
         }
     }
 
-    // 构建结果
+    Ok((history, history_truncated))
+}
+
+/// 从 HEAD tree 构建最终指标结果（应用 rename map 到规范路径）。
+fn build_results(
+    repo: &Repository,
+    rename_map: &HashMap<String, String>,
+    history: &FileHistory,
+) -> HashMap<String, FileGitMetrics> {
     let mut results = HashMap::new();
+    let now = Utc::now();
 
     // 从 HEAD tree 获取当前文件列表
-    if let Ok(head) = repo.head() {
-        if let Ok(head_commit) = head.peel_to_commit() {
-            if let Ok(tree) = head_commit.tree() {
-                // 遍历 HEAD tree（使用递归遍历）
-                collect_tree_entries(&repo, &tree, "", &mut |path| {
-                    let canonical = rename_map.get(&path).cloned().unwrap_or(path.clone());
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| commit.tree().ok());
 
-                    let metrics = FileGitMetrics {
-                        path: canonical.clone(),
-                        commit_count: file_commits.get(&canonical).copied().unwrap_or(0),
-                        distinct_authors: file_authors
-                            .get(&canonical)
-                            .map(|a| a.len() as u32)
-                            .unwrap_or(0),
-                        last_modified_days_ago: file_last_modified
-                            .get(&canonical)
-                            .map(|ts| {
-                                let days = (now.timestamp() - ts) / 86400;
-                                days.max(0) as u32
-                            })
-                            .unwrap_or(0),
-                        incident_commit_count: file_incidents.get(&canonical).copied().unwrap_or(0),
-                    };
-                    results.insert(canonical, metrics);
-                });
-            }
-        }
+    if let Some(tree) = head_tree {
+        // 遍历 HEAD tree（使用递归遍历）
+        collect_tree_entries(repo, &tree, "", &mut |path| {
+            let canonical = rename_map.get(&path).cloned().unwrap_or(path.clone());
+
+            let metrics = FileGitMetrics {
+                path: canonical.clone(),
+                commit_count: history.commits.get(&canonical).copied().unwrap_or(0),
+                distinct_authors: history
+                    .authors
+                    .get(&canonical)
+                    .map(|a| a.len() as u32)
+                    .unwrap_or(0),
+                last_modified_days_ago: history
+                    .last_modified
+                    .get(&canonical)
+                    .map(|ts| ((now.timestamp() - ts) / 86400).max(0) as u32)
+                    .unwrap_or(0),
+                incident_commit_count: history.incidents.get(&canonical).copied().unwrap_or(0),
+            };
+            results.insert(canonical, metrics);
+        });
     }
 
-    Ok((results, history_truncated, history_rewrite))
+    results
 }
 
 /// 递归遍历 git tree 收集文件路径。

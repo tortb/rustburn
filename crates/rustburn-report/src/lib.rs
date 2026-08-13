@@ -16,6 +16,19 @@ struct ReportTemplate<'a> {
     report_data_json: String,
 }
 
+/// 给数字字符串添加千分位分隔符
+fn thousands_separated(value: usize) -> String {
+    let s = value.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 #[allow(dead_code)]
 impl<'a> ReportTemplate<'a> {
     /// 根据热度分数返回 CSS 类名
@@ -77,28 +90,12 @@ impl<'a> ReportTemplate<'a> {
 
     /// 格式化总代码行数（带千分位）
     fn format_total_loc(&self) -> String {
-        let s = self.total_loc().to_string();
-        let mut result = String::new();
-        for (i, c) in s.chars().rev().enumerate() {
-            if i > 0 && i % 3 == 0 {
-                result.push(',');
-            }
-            result.push(c);
-        }
-        result.chars().rev().collect()
+        thousands_separated(self.total_loc() as usize)
     }
 
     /// 格式化文件数量（带千分位，接受 usize 值）
     fn format_number_usize(&self, value: usize) -> String {
-        let s = value.to_string();
-        let mut result = String::new();
-        for (i, c) in s.chars().rev().enumerate() {
-            if i > 0 && i % 3 == 0 {
-                result.push(',');
-            }
-            result.push(c);
-        }
-        result.chars().rev().collect()
+        thousands_separated(value)
     }
 
     /// 支持语言列表格式化
@@ -129,11 +126,6 @@ impl<'a> ReportTemplate<'a> {
             .count()
     }
 
-    /// Top 5% 风险文件数量
-    fn top_risk_count(&self) -> usize {
-        self.report.top_risk_files.len()
-    }
-
     /// Top 5% 风险文件占比百分比（格式化为字符串）
     fn top_risk_percentage_str(&self) -> String {
         format!("{:.1}", self.top_risk_percentage())
@@ -145,11 +137,6 @@ impl<'a> ReportTemplate<'a> {
         (self.report.top_risk_files.len() as f64 / file_count) * 100.0
     }
 
-    /// 计算依赖漏洞总数
-    fn total_vulnerabilities(&self) -> usize {
-        self.report.dependency_findings.len()
-    }
-
     /// 历史重写检测是否确认为 Detected
     fn is_history_rewrite_detected(&self, state: &HistoryRewriteState) -> bool {
         matches!(state, HistoryRewriteState::Detected)
@@ -158,6 +145,149 @@ impl<'a> ReportTemplate<'a> {
     /// 历史重写检测是否确认为 NotDetected
     fn is_history_rewrite_not_detected(&self, state: &HistoryRewriteState) -> bool {
         matches!(state, HistoryRewriteState::NotDetected)
+    }
+
+    // ---- 以下 helper 用于替代模板内联的 {% if %} 条件（保持渲染输出不变）----
+
+    /// 分数颜色类：<30 绿 / <60 黄 / <80 橙 / 其余红
+    fn score_color_class(&self, score: &f64) -> &'static str {
+        if *score < 30.0 {
+            "color-green"
+        } else if *score < 60.0 {
+            "color-yellow"
+        } else if *score < 80.0 {
+            "color-orange"
+        } else {
+            "color-red"
+        }
+    }
+
+    /// 风险分数颜色类（percentile 与分数统一 4 档：<30 / <60 / <80 / ≥80）
+    fn risk_color_class(&self, score: &f64) -> &'static str {
+        self.score_color_class(score)
+    }
+
+    /// 风险档位类：设置 --risk-color/--risk-bg 两个变量，供环形、热力图、进度条等消费。
+    /// 与 score_color_class 同源同档位，保证全站色阶一致。
+    fn risk_tier_class(&self, score: &f64) -> &'static str {
+        if *score < 30.0 {
+            "tier-low"
+        } else if *score < 60.0 {
+            "tier-mid"
+        } else if *score < 80.0 {
+            "tier-high"
+        } else {
+            "tier-critical"
+        }
+    }
+
+    /// 置信度颜色类：>=0.8 绿 / >=0.5 黄 / 其余橙（引用参数，用于字段访问）
+    fn confidence_color_class(&self, conf: &f64) -> &'static str {
+        if *conf >= 0.8 {
+            "color-green"
+        } else if *conf >= 0.5 {
+            "color-yellow"
+        } else {
+            "color-orange"
+        }
+    }
+
+    /// 置信度颜色类（值参数，用于方法返回值）
+    fn confidence_color_class_val(&self, conf: f64) -> &'static str {
+        self.confidence_color_class(&conf)
+    }
+
+    /// 分数 pill 类名：<30 low / <60 medium / <80 high / 其余 critical
+    fn score_pill_class(&self, score: &f64) -> &'static str {
+        if *score < 30.0 {
+            "pill-low"
+        } else if *score < 60.0 {
+            "pill-medium"
+        } else if *score < 80.0 {
+            "pill-high"
+        } else {
+            "pill-critical"
+        }
+    }
+
+    /// 置信度 pill 类名：>=0.8 low / >=0.5 medium / 其余 high（引用参数）
+    fn confidence_pill_class(&self, conf: &f64) -> &'static str {
+        if *conf >= 0.8 {
+            "pill-low"
+        } else if *conf >= 0.5 {
+            "pill-medium"
+        } else {
+            "pill-high"
+        }
+    }
+
+    /// 置信度 pill 类名（值参数，用于方法返回值）
+    fn confidence_pill_class_val(&self, conf: f64) -> &'static str {
+        self.confidence_pill_class(&conf)
+    }
+
+    /// heat-bar 填充条颜色类（背景色随分数档位）
+    fn heat_bar_class(&self, score: &f64) -> &'static str {
+        if *score < 30.0 {
+            "fill-green"
+        } else if *score < 60.0 {
+            "fill-yellow"
+        } else if *score < 80.0 {
+            "fill-orange"
+        } else {
+            "fill-red"
+        }
+    }
+
+    /// 布尔状态颜色类：true 橙 / false 绿
+    fn flag_color_class(&self, flag: &bool) -> &'static str {
+        if *flag {
+            "color-orange"
+        } else {
+            "color-green"
+        }
+    }
+
+    /// 历史重写状态颜色类：Detected 橙 / NotDetected 绿 / Unknown 灰
+    fn history_rewrite_color_class(&self, state: &HistoryRewriteState) -> &'static str {
+        match state {
+            HistoryRewriteState::Detected => "color-orange",
+            HistoryRewriteState::NotDetected => "color-green",
+            HistoryRewriteState::Unknown => "color-muted",
+        }
+    }
+
+    /// 最终热度阶段类：<60 黄 / 其余红
+    fn final_stage_class(&self, score: &f64) -> &'static str {
+        if *score < 60.0 {
+            "stage-yellow"
+        } else {
+            "stage-red"
+        }
+    }
+
+    /// 漏洞严重度 pill 类名（按索引）
+    fn vuln_pill_class(&self, idx: &usize) -> &'static str {
+        if self.vuln_severity_eq(idx, "Low") {
+            "pill-low"
+        } else if self.vuln_severity_eq(idx, "Medium") {
+            "pill-medium"
+        } else if self.vuln_severity_eq(idx, "High") {
+            "pill-high"
+        } else {
+            "pill-critical"
+        }
+    }
+
+    /// 严重度 pill 类名（None 使用 muted）
+    fn severity_pill_class(&self, severity: &Severity) -> &'static str {
+        match severity {
+            Severity::Low => "pill-low",
+            Severity::Medium => "pill-medium",
+            Severity::High => "pill-high",
+            Severity::Critical => "pill-critical",
+            Severity::None => "pill-muted",
+        }
     }
 
     /// 计算趋势历史中的平均 base_risk_score

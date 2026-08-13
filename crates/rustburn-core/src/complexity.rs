@@ -2,6 +2,9 @@
 //!
 //! 支持 Rust (.rs) 和 JavaScript (.js, .jsx) 的 AST 分析。
 //! 计算圈复杂度、if 嵌套深度、函数长度等指标。
+//!
+//! 遍历与统计逻辑均为语言无关的通用框架，语言差异仅体现在
+//! [AstSpec] 的节点类型映射表上。
 
 use tree_sitter::{Language as TsLanguage, Node, Parser, Tree};
 
@@ -52,6 +55,69 @@ struct IfStats {
     chained: u32,
     /// 最大嵌套深度
     max_depth: u32,
+}
+
+/// 语言无关的 AST 遍历框架。
+///
+/// 每种语言只需提供节点类型映射表，所有遍历与统计逻辑（LOC、函数提取、
+/// 决策点计数、if 统计）全部复用。
+trait AstSpec {
+    /// 函数定义节点类型
+    const FUNCTIONS: &'static [&'static str];
+    /// 注释节点类型
+    const COMMENTS: &'static [&'static str];
+    /// if 节点类型
+    const IF: &'static str;
+    /// 计 1 个决策点的节点类型
+    const DECISION_POINTS: &'static [&'static str];
+    /// 分支容器节点类型（match/switch），其决策点数按分支子节点统计
+    const BRANCH_CONTAINER: &'static str;
+    /// 分支子节点类型
+    const BRANCHES: &'static [&'static str];
+    /// 分支容器内可嵌套的子容器类型
+    const NESTED_CONTAINER: &'static str;
+}
+
+/// Rust 节点类型映射表
+struct RustAst;
+
+impl AstSpec for RustAst {
+    const FUNCTIONS: &'static [&'static str] = &["function_item"];
+    const COMMENTS: &'static [&'static str] = &["line_comment", "block_comment"];
+    const IF: &'static str = "if_expression";
+    const DECISION_POINTS: &'static [&'static str] = &[
+        "if_expression",
+        "for_expression",
+        "while_expression",
+        "loop_expression",
+    ];
+    const BRANCH_CONTAINER: &'static str = "match_expression";
+    const BRANCHES: &'static [&'static str] = &["match_arm"];
+    const NESTED_CONTAINER: &'static str = "match_block";
+}
+
+/// JavaScript 节点类型映射表
+struct JsAst;
+
+impl AstSpec for JsAst {
+    const FUNCTIONS: &'static [&'static str] = &[
+        "function_declaration",
+        "function_expression",
+        "arrow_function",
+    ];
+    const COMMENTS: &'static [&'static str] = &["comment"];
+    const IF: &'static str = "if_statement";
+    const DECISION_POINTS: &'static [&'static str] = &[
+        "if_statement",
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+        "catch_clause",
+    ];
+    const BRANCH_CONTAINER: &'static str = "switch_statement";
+    const BRANCHES: &'static [&'static str] = &["switch_case", "switch_default"];
+    const NESTED_CONTAINER: &'static str = "switch_body";
 }
 
 /// 获取 tree-sitter 语言定义
@@ -145,7 +211,15 @@ fn calculate_loc(source: &str, lang: Language, tree: Option<&Tree>) -> u32 {
 
     if let Some(tree) = tree {
         // 遍历 AST 所有节点，收集非注释的叶子节点所在的行
-        collect_code_lines(tree.root_node(), source, lang, &mut code_lines);
+        match lang {
+            Language::Rust => {
+                collect_code_lines::<RustAst>(tree.root_node(), source, &mut code_lines)
+            }
+            Language::JavaScript => {
+                collect_code_lines::<JsAst>(tree.root_node(), source, &mut code_lines)
+            }
+            Language::Unknown => {}
+        }
     } else {
         // 解析失败时回退到简单计数（非空行）
         for (i, line) in source.lines().enumerate() {
@@ -160,23 +234,14 @@ fn calculate_loc(source: &str, lang: Language, tree: Option<&Tree>) -> u32 {
 
 /// 递归遍历 AST，收集包含代码 token 的行号。
 ///
-/// 跳过注释节点（line_comment, block_comment），其他节点标记其所在行。
-fn collect_code_lines<'a>(
-    node: Node<'a>,
+/// 跳过注释节点，其他节点标记其所在行。
+fn collect_code_lines<T: AstSpec>(
+    node: Node<'_>,
     source: &str,
-    lang: Language,
     code_lines: &mut std::collections::HashSet<usize>,
 ) {
-    let kind = node.kind();
-
     // 跳过注释节点
-    let is_comment = match lang {
-        Language::Rust => kind == "line_comment" || kind == "block_comment",
-        Language::JavaScript => kind == "comment",
-        Language::Unknown => false,
-    };
-
-    if is_comment {
+    if T::COMMENTS.contains(&node.kind()) {
         return;
     }
 
@@ -196,7 +261,7 @@ fn collect_code_lines<'a>(
         // 递归处理子节点
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            collect_code_lines(child, source, lang, code_lines);
+            collect_code_lines::<T>(child, source, code_lines);
         }
     }
 }
@@ -204,64 +269,34 @@ fn collect_code_lines<'a>(
 /// 提取所有函数信息
 fn extract_functions(tree: &Tree, source: &str, lang: Language) -> Vec<FunctionInfo> {
     let mut functions = Vec::new();
-    let root = tree.root_node();
 
     match lang {
-        Language::Rust => extract_rust_functions(root, source, &mut functions),
-        Language::JavaScript => extract_js_functions(root, source, &mut functions),
+        Language::Rust => collect_functions::<RustAst>(tree.root_node(), source, &mut functions),
+        Language::JavaScript => {
+            collect_functions::<JsAst>(tree.root_node(), source, &mut functions)
+        }
         Language::Unknown => {}
     }
 
     functions
 }
 
-/// 提取 Rust 函数
-fn extract_rust_functions(node: Node, source: &str, functions: &mut Vec<FunctionInfo>) {
-    let kind = node.kind();
-
-    if kind == "function_item" {
-        let name = extract_node_text(node.child_by_field_name("name"), source);
-        let complexity = calculate_rust_complexity(node, source);
-        let if_stats = calculate_rust_if_stats(node, source, 0, false);
-
+/// 递归遍历 AST，提取函数信息
+fn collect_functions<T: AstSpec>(node: Node<'_>, source: &str, functions: &mut Vec<FunctionInfo>) {
+    if T::FUNCTIONS.contains(&node.kind()) {
         functions.push(FunctionInfo {
-            _name: name,
+            _name: extract_node_text(node.child_by_field_name("name"), source),
             start_line: node.start_position().row as u32,
             end_line: node.end_position().row as u32,
-            complexity,
-            if_stats,
+            complexity: calculate_function_complexity::<T>(node, source),
+            if_stats: calculate_if_stats::<T>(node, source, 0, false),
         });
     }
 
     // 递归处理子节点
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        extract_rust_functions(child, source, functions);
-    }
-}
-
-/// 提取 JavaScript 函数
-fn extract_js_functions(node: Node, source: &str, functions: &mut Vec<FunctionInfo>) {
-    let kind = node.kind();
-
-    if kind == "function_declaration" || kind == "function_expression" || kind == "arrow_function" {
-        let name = extract_node_text(node.child_by_field_name("name"), source);
-        let complexity = calculate_js_complexity(node, source);
-        let if_stats = calculate_js_if_stats(node, source, 0, false);
-
-        functions.push(FunctionInfo {
-            _name: name,
-            start_line: node.start_position().row as u32,
-            end_line: node.end_position().row as u32,
-            complexity,
-            if_stats,
-        });
-    }
-
-    // 递归处理子节点
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        extract_js_functions(child, source, functions);
+        collect_functions::<T>(child, source, functions);
     }
 }
 
@@ -274,234 +309,94 @@ fn extract_node_text(node: Option<Node>, source: &str) -> Option<String> {
     })
 }
 
-/// 计算 Rust 函数的圈复杂度
-fn calculate_rust_complexity(node: Node, source: &str) -> u32 {
-    let mut complexity = 1; // 基础复杂度
-
+/// 计算函数圈复杂度（基础 1 + 所有子节点的决策点数）。
+fn calculate_function_complexity<T: AstSpec>(node: Node<'_>, source: &str) -> u32 {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        complexity += count_rust_decisions(child, source);
-    }
-
-    complexity
+    1 + node
+        .children(&mut cursor)
+        .map(|child| count_decisions::<T>(child, source))
+        .sum::<u32>()
 }
 
-/// 计算 Rust 决策点数量
-fn count_rust_decisions(node: Node, source: &str) -> u32 {
+/// 计算节点及其子树的决策点数量。
+fn count_decisions<T: AstSpec>(node: Node<'_>, source: &str) -> u32 {
     let kind = node.kind();
-    let mut count = 0;
-
-    match kind {
-        "if_expression" => {
-            count += 1;
-            // 检查是否是 else if
-            if is_else_if_rust(node, source) {
-                // else if 不额外计数，因为 if_expression 已经计数
-            }
-        }
-        "match_expression" => {
-            // match 的每个 arm 都增加一个 decision
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "match_arm" || child.kind() == "match_block" {
-                    count += count_match_arms(child);
-                }
-            }
-        }
-        "for_expression" | "while_expression" | "loop_expression" => {
-            count += 1;
-        }
+    let mut count = match kind {
+        k if T::DECISION_POINTS.contains(&k) => 1,
+        k if k == T::BRANCH_CONTAINER => count_branches::<T>(node),
         "binary_expression" => {
             // 检查当前层级的逻辑运算符
             if let Some(op) = node.child_by_field_name("operator") {
                 let op_text = &source[op.start_byte()..op.end_byte()];
                 if op_text == "&&" || op_text == "||" {
-                    count += 1;
+                    1
+                } else {
+                    0
                 }
+            } else {
+                0
             }
         }
-        _ => {}
-    }
+        _ => 0,
+    };
 
     // 递归处理子节点
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        count += count_rust_decisions(child, source);
+        count += count_decisions::<T>(child, source);
     }
 
     count
 }
 
-/// 检查是否是 else if
-fn is_else_if_rust(node: Node, source: &str) -> bool {
-    // 简化实现：检查前面是否有 else 关键字
-    let start = node.start_byte();
-    if start > 0 {
-        let before = &source[..start];
-        let trimmed = before.trim_end();
-        return trimmed.ends_with("else");
-    }
-    false
-}
-
-/// 计算 match arm 数量
-fn count_match_arms(node: Node) -> u32 {
-    let mut count = 0;
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        if child.kind() == "match_arm" {
-            count += 1;
-        } else if child.kind() == "match_block" {
-            count += count_match_arms(child);
-        }
-    }
-
-    count
-}
-
-/// 计算 Rust if 统计
-fn calculate_rust_if_stats(node: Node, source: &str, depth: u32, is_nested: bool) -> IfStats {
-    let mut stats = IfStats::default();
-    let kind = node.kind();
-
-    if kind == "if_expression" {
-        stats.total += 1;
-
-        if is_nested {
-            stats.nested += 1;
-        }
-
-        if is_else_if_rust(node, source) {
-            stats.chained += 1;
-        }
-
-        let new_depth = if is_else_if_rust(node, source) {
-            depth
-        } else {
-            depth + 1
-        };
-
-        stats.max_depth = stats.max_depth.max(new_depth);
-
-        // 递归处理子节点
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            let child_stats = calculate_rust_if_stats(child, source, new_depth, true);
-            stats.merge(child_stats);
-        }
-
-        return stats;
-    }
-
-    // 递归处理子节点
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let child_stats = calculate_rust_if_stats(child, source, depth, is_nested);
-        stats.merge(child_stats);
-    }
-
-    stats
-}
-
-/// 计算 JavaScript 函数的圈复杂度
-fn calculate_js_complexity(node: Node, source: &str) -> u32 {
-    let mut complexity = 1; // 基础复杂度
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        complexity += count_js_decisions(child, source);
-    }
-
-    complexity
-}
-
-/// 计算 JavaScript 决策点数量
-fn count_js_decisions(node: Node, source: &str) -> u32 {
-    let kind = node.kind();
-    let mut count = 0;
-
-    match kind {
-        "if_statement" => {
-            count += 1;
-        }
-        "switch_statement" => {
-            // 每个 case 和 default 都增加一个 decision
-            count += count_switch_cases(node);
-        }
-        "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
-            count += 1;
-        }
-        "catch_clause" => {
-            count += 1;
-        }
-        "binary_expression" => {
-            // 检查当前层级的逻辑运算符
-            if let Some(op) = node.child_by_field_name("operator") {
-                let op_text = &source[op.start_byte()..op.end_byte()];
-                if op_text == "&&" || op_text == "||" {
-                    count += 1;
-                }
-            }
-        }
-        _ => {}
-    }
-
-    // 递归处理子节点
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        count += count_js_decisions(child, source);
-    }
-
-    count
-}
-
-/// 计算 switch case 数量
-fn count_switch_cases(node: Node) -> u32 {
+/// 统计分支容器的分支数量（match arm / switch case）。
+fn count_branches<T: AstSpec>(node: Node<'_>) -> u32 {
     let mut count = 0;
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
         let kind = child.kind();
-        if kind == "switch_body" {
-            count += count_switch_cases(child);
-        } else if kind == "switch_case" || kind == "switch_default" {
+        if T::BRANCHES.contains(&kind) {
             count += 1;
+        } else if kind == T::NESTED_CONTAINER {
+            count += count_branches::<T>(child);
         }
     }
 
     count
 }
 
-/// 计算 JavaScript if 统计
-fn calculate_js_if_stats(node: Node, source: &str, depth: u32, is_nested: bool) -> IfStats {
+/// 计算子树内的 if 统计。
+///
+/// 设计要点：链式 if（else if）不增加嵌套深度，嵌套 if 增加深度。
+fn calculate_if_stats<T: AstSpec>(
+    node: Node<'_>,
+    source: &str,
+    depth: u32,
+    is_nested: bool,
+) -> IfStats {
     let mut stats = IfStats::default();
-    let kind = node.kind();
 
-    if kind == "if_statement" {
+    if node.kind() == T::IF {
         stats.total += 1;
 
         if is_nested {
             stats.nested += 1;
         }
 
-        if is_else_if_js(node, source) {
+        let is_else_if = is_else_if(node, source);
+        if is_else_if {
             stats.chained += 1;
         }
 
-        let new_depth = if is_else_if_js(node, source) {
-            depth
-        } else {
-            depth + 1
-        };
-
+        // 链式 if（else if）不增加嵌套深度，嵌套 if 深度 +1
+        let new_depth = if is_else_if { depth } else { depth + 1 };
         stats.max_depth = stats.max_depth.max(new_depth);
 
         // 递归处理子节点
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            let child_stats = calculate_js_if_stats(child, source, new_depth, true);
-            stats.merge(child_stats);
+            stats.merge(calculate_if_stats::<T>(child, source, new_depth, true));
         }
 
         return stats;
@@ -510,22 +405,16 @@ fn calculate_js_if_stats(node: Node, source: &str, depth: u32, is_nested: bool) 
     // 递归处理子节点
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        let child_stats = calculate_js_if_stats(child, source, depth, is_nested);
-        stats.merge(child_stats);
+        stats.merge(calculate_if_stats::<T>(child, source, depth, is_nested));
     }
 
     stats
 }
 
-/// 检查是否是 else if
-fn is_else_if_js(node: Node, source: &str) -> bool {
+/// 检查是否是 else if（节点前面紧跟 else 关键字）。
+fn is_else_if(node: Node<'_>, source: &str) -> bool {
     let start = node.start_byte();
-    if start > 0 {
-        let before = &source[..start];
-        let trimmed = before.trim_end();
-        return trimmed.ends_with("else");
-    }
-    false
+    start > 0 && source[..start].trim_end().ends_with("else")
 }
 
 impl IfStats {

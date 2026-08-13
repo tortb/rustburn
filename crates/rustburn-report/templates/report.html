@@ -30,6 +30,16 @@
   --orange-bg: rgba(249, 115, 22, 0.14);
   --red: #ef4444;
   --red-bg: rgba(239, 68, 68, 0.14);
+  /* 风险色阶语义别名：低→绿 / 中→黄 / 高→橙 / 严重→红。
+     全站热力图、列表、标签、趋势曲线、进度条统一引用，勿直接使用散落色值。 */
+  --risk-low: var(--green);
+  --risk-mid: var(--yellow);
+  --risk-high: var(--orange);
+  --risk-critical: var(--red);
+  --risk-low-bg: var(--green-bg);
+  --risk-mid-bg: var(--yellow-bg);
+  --risk-high-bg: var(--orange-bg);
+  --risk-critical-bg: var(--red-bg);
   --radius: 14px;
   --radius-sm: 9px;
   --radius-xs: 6px;
@@ -280,6 +290,17 @@ svg { display: block; flex-shrink: 0; }
 .treemap-tooltip .tmetric { color: var(--text-secondary); }
 .treemap-tooltip .tscore { font-weight: 600; }
 
+/* 趋势曲线 hover tooltip */
+.trend-tip {
+  position: absolute; pointer-events: none; z-index: 50;
+  background: var(--bg-elevated); border: 1px solid var(--border-accent);
+  border-radius: 6px; padding: 6px 10px; font-size: 11.5px;
+  box-shadow: var(--shadow-lg); min-width: 130px; white-space: nowrap;
+}
+.trend-tip .tip-sha { font-family: var(--font-mono); color: var(--text-primary); margin-bottom: 3px; }
+.trend-tip .tip-meta { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.trend-tip .tip-score { font-weight: 600; }
+
 /* ===== Risk Table ===== */
 .risk-table-wrap {
   border: 1px solid var(--border); border-radius: var(--radius-xs);
@@ -318,12 +339,6 @@ svg { display: block; flex-shrink: 0; }
 .heat-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
 
 /* ===== File Detail Tabs ===== */
-.file-detail {
-  background: var(--bg-deep); border-top: 1px solid var(--border);
-  padding: 0; display: none;
-}
-.risk-table tbody tr.expanded + tr.file-detail,
-.risk-table tbody tr.file-detail.open { display: block; }
 .detail-inner {
   display: grid; grid-template-columns: 1.1fr 1fr;
   gap: 0; border-left: 3px solid var(--border-accent);
@@ -395,9 +410,9 @@ svg { display: block; flex-shrink: 0; }
 
 /* ===== Charts ===== */
 .chart-box {
+  position: relative;
   background: var(--bg-deep); border: 1px solid var(--border);
   border-radius: var(--radius-xs); padding: 10px;
-  position: relative;
 }
 .chart-box canvas { width: 100%; height: 190px; display: block; }
 .chart-meta {
@@ -543,6 +558,174 @@ svg { display: block; flex-shrink: 0; }
   .kpi-grid { grid-template-columns: 1fr; }
   .header h1 { font-size: 18px; }
 }
+
+/* ===== 动态颜色工具类（由模板 helper 渲染 class 引用，全部映射到风险色阶） ===== */
+.color-green { color: var(--risk-low); }
+.color-yellow { color: var(--risk-mid); }
+.color-orange { color: var(--risk-high); }
+.color-red { color: var(--risk-critical); }
+.color-muted { color: var(--text-muted); }
+.stage-yellow { background: var(--risk-mid-bg); color: var(--risk-mid); }
+.stage-red { background: var(--risk-critical-bg); color: var(--risk-critical); }
+.fill-green { background: var(--risk-low); }
+.fill-yellow { background: var(--risk-mid); }
+.fill-orange { background: var(--risk-high); }
+.fill-red { background: var(--risk-critical); }
+/* 档位类：同时设置文字颜色与 --risk-color/--risk-bg，供环形/热力图/进度条消费 */
+.tier-low { color: var(--risk-low); --risk-color: var(--risk-low); --risk-bg: var(--risk-low-bg); }
+.tier-mid { color: var(--risk-mid); --risk-color: var(--risk-mid); --risk-bg: var(--risk-mid-bg); }
+.tier-high { color: var(--risk-high); --risk-color: var(--risk-high); --risk-bg: var(--risk-high-bg); }
+.tier-critical { color: var(--risk-critical); --risk-color: var(--risk-critical); --risk-bg: var(--risk-critical-bg); }
+
+/* ===== 关于这份报告（折叠说明） ===== */
+.about-note {
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  background: var(--bg-card); margin-bottom: 16px; overflow: hidden;
+}
+.about-note summary {
+  display: flex; align-items: center; gap: 9px; cursor: pointer;
+  padding: 10px 14px; font-size: 12.5px; color: var(--text-secondary);
+  list-style: none; user-select: none;
+}
+.about-note summary::-webkit-details-marker { display: none; }
+.about-note summary::before {
+  content: ""; width: 7px; height: 7px; flex-shrink: 0;
+  border-right: 1.5px solid var(--text-muted); border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(-45deg); transition: transform 0.15s;
+}
+.about-note[open] summary::before { transform: rotate(45deg); }
+.about-note .about-body { padding: 0 14px 12px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.75; }
+.about-note .about-body code {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-primary);
+  background: var(--bg-deep); padding: 1px 6px; border-radius: 4px;
+}
+
+/* ===== 热力环（纯 CSS conic-gradient） ===== */
+.ring {
+  --p: 0;
+  position: relative; width: 132px; height: 132px; flex-shrink: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--risk-color, var(--accent)) calc(var(--p) * 1%),
+    rgba(120, 140, 180, 0.10) 0
+  );
+}
+.ring::before {
+  content: ""; position: absolute; inset: 15px; border-radius: 50%;
+  background: var(--bg-card);
+}
+.ring-core {
+  position: relative; z-index: 1; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.ring-value {
+  font-family: var(--font-mono); font-size: 30px; font-weight: 700; line-height: 1.05;
+  color: var(--risk-color, var(--text-primary)); font-variant-numeric: tabular-nums;
+}
+.ring-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+/* ===== Top 风险文件卡片 ===== */
+.risk-card-list { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+.risk-card {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-card); overflow: hidden;
+}
+.risk-card.open { border-color: var(--border-accent); }
+.risk-card-head {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 14px; text-align: left; background: none; border: none; color: inherit;
+}
+.risk-card-head:hover { background: var(--bg-card-hover); }
+.risk-card-path {
+  flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.risk-card-heat { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.risk-card-score { font-family: var(--font-mono); font-weight: 700; font-size: 13.5px; min-width: 40px; text-align: right; }
+.risk-card-chevron { color: var(--text-muted); transition: transform 0.15s; flex-shrink: 0; }
+.risk-card.open .risk-card-chevron { transform: rotate(90deg); }
+.risk-card-body { display: none; border-top: 1px solid var(--border-light); padding: 12px 14px; }
+.risk-card.open .risk-card-body { display: block; }
+.heat-bar-sm { width: 74px; height: 6px; }
+
+/* ===== 三层公式概览（展开态） ===== */
+.formula-overview { margin-bottom: 12px; }
+.fo-title { font-size: 11.5px; color: var(--text-muted); margin-bottom: 8px; letter-spacing: 0.02em; }
+.fo-bars { display: flex; flex-direction: column; gap: 7px; }
+.fo-row { display: flex; align-items: center; gap: 10px; }
+.fo-label { width: 74px; font-size: 11.5px; color: var(--text-secondary); flex-shrink: 0; }
+.fo-bar {
+  flex: 1; height: 10px; border-radius: 5px; overflow: hidden;
+  background: rgba(120, 140, 180, 0.12); min-width: 60px;
+}
+.fo-bar-fill { height: 100%; border-radius: 5px; background: var(--risk-color); }
+.fo-row-value {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+  min-width: 92px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums;
+}
+.fo-flow {
+  margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  padding: 8px 11px; background: var(--bg-deep); border-radius: var(--radius-xs);
+}
+.fo-flow .fo-op { color: var(--text-muted); }
+.fo-flow .fo-stage { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ===== Treemap（CSS div 渲染） ===== */
+.treemap-cell {
+  position: absolute; overflow: hidden; cursor: pointer;
+  background: var(--risk-bg); border: 1px solid rgba(11, 15, 26, 0.6);
+}
+.treemap-cell::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 2px; background: var(--risk-color);
+}
+.treemap-cell:hover { outline: 1px solid var(--risk-color); z-index: 2; }
+.treemap-label {
+  position: absolute; left: 7px; right: 7px; top: 50%; transform: translateY(-50%);
+  font-family: var(--font-mono); font-size: 10.5px; color: rgba(230, 237, 247, 0.82);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}
+.treemap-rest { margin-top: 10px; font-size: 12px; }
+.treemap-rest summary { cursor: pointer; color: var(--text-secondary); }
+.treemap-rest summary:hover { color: var(--text-primary); }
+.treemap-rest-list { margin-top: 8px; max-height: 260px; overflow: auto; }
+.treemap-rest-list .rest-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 5px 8px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+}
+.treemap-rest-list .rest-row:nth-child(odd) { background: rgba(120, 140, 180, 0.06); }
+.treemap-rest-list .rest-row:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.treemap-empty {
+  display: flex; align-items: center; justify-content: center; height: 100%;
+  color: var(--text-muted); font-size: 12.5px;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 1100px) {
+  .sidebar { width: 200px; min-width: 200px; }
+}
+@media (max-width: 900px) {
+  .app { display: block; }
+  .sidebar {
+    width: 100%; min-width: 0; height: auto; position: static;
+    flex-direction: row; align-items: center; overflow-x: auto;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+  .sidebar-brand { padding: 10px 14px; border-bottom: none; border-right: 1px solid var(--border-light); }
+  .sidebar-nav { display: flex; padding: 8px 10px; }
+  .sidebar-nav a { white-space: nowrap; margin-bottom: 0; margin-right: 2px; }
+  .sidebar-section, .sidebar-footer { display: none; }
+  .dash-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+  .treemap-container { height: 300px; }
+  .risk-card-head { flex-wrap: wrap; gap: 6px; }
+  .fo-row { flex-wrap: wrap; }
+  .header-actions .btn span { display: none; }
+}
 </style>
 </head>
 <body>
@@ -626,6 +809,14 @@ svg { display: block; flex-shrink: 0; }
 <!-- ===== Main ===== -->
 <main class="main">
 
+<!-- 关于这份报告（折叠说明，便于被分享时新读者快速理解） -->
+<details class="about-note">
+  <summary>关于这份报告：三层公式如何得出风险分？</summary>
+  <div class="about-body">
+    rustburn 用三层公式评估代码技术债：<code>基础风险分</code>（复杂度 / 历史 / 依赖三个维度的仓库内百分位排名）&times; <code>趋势系数</code>（历史快照分数变化，&gt;1 放大风险、&lt;1 收窄）&rarr; <code>最终热力值</code>。分数越高，风险越大；所有中间值均可在此报告中追溯。
+  </div>
+</details>
+
 <!-- Header -->
 <div class="header" id="overview">
   <div>
@@ -654,20 +845,16 @@ svg { display: block; flex-shrink: 0; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v5M12 17v.5" stroke-linecap="round"/></svg>
       仓库总热力值
     </div>
-    <div style="display:flex;align-items:center;gap:14px;">
-      <canvas id="ring-chart"></canvas>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div class="ring {{ self.risk_tier_class(report.repo_total_heat_score) }}" data-p="{{ self.fmt_f64v(report.repo_total_heat_score, 0) }}">
+        <div class="ring-core">
+          <span class="ring-value">{{ self.fmt_f64(report.repo_total_heat_score, 1) }}</span>
+          <span class="ring-label">/ 100</span>
+        </div>
+      </div>
       <div>
-        <div class="kpi-value" style="color:{% if report.repo_total_heat_score < 30.0 %}var(--green){% else if report.repo_total_heat_score < 60.0 %}var(--yellow){% else if report.repo_total_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">
-          {{ self.fmt_f64(report.repo_total_heat_score, 1) }}
-        </div>
-        <div class="kpi-sub"><span>/ 100</span> &middot; <span class="{% if report.repo_total_heat_score < 30.0 %}pill-low{% else if report.repo_total_heat_score < 60.0 %}pill-medium{% else if report.repo_total_heat_score < 80.0 %}pill-high{% else %}pill-critical{% endif %} pill"><span class="dot"></span>{{ self.risk_level(report.repo_total_heat_score) }}</span></div>
-        <div class="kpi-sub" style="margin-top:4px;">
-          <span class="kpi-trend up">
-            <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg>
-            9.3
-          </span>
-          &nbsp;较上次周期
-        </div>
+        <div class="kpi-sub"><span class="{{ self.score_pill_class(report.repo_total_heat_score) }} pill"><span class="dot"></span>{{ self.risk_level(report.repo_total_heat_score) }}</span></div>
+        <div class="kpi-sub" style="margin-top:5px;font-size:11.5px;max-width:210px;line-height:1.6;">基础风险分 &times; 趋势系数（历史变化）加权得出</div>
       </div>
     </div>
   </div>
@@ -680,9 +867,8 @@ svg { display: block; flex-shrink: 0; }
     </div>
     <div style="display:flex;justify-content:space-between;align-items:flex-end;">
       <div class="kpi-value" style="color:var(--accent)">{{ self.format_number_usize(self.file_count_value()) }}</div>
-      <canvas id="spark-files"></canvas>
     </div>
-    <div class="kpi-sub">较上次扫描 <span class="kpi-trend up"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg> + 12</span></div>
+    <div class="kpi-sub">跳过 {{ report.analysis_metadata.skipped_files }} 个不可解析文件</div>
   </div>
 
   <!-- 3. LOC -->
@@ -693,9 +879,8 @@ svg { display: block; flex-shrink: 0; }
     </div>
     <div style="display:flex;justify-content:space-between;align-items:flex-end;">
       <div class="kpi-value" style="color:var(--green)">{{ self.format_total_loc() }}</div>
-      <canvas id="spark-loc"></canvas>
     </div>
-    <div class="kpi-sub">较上次扫描 <span class="kpi-trend up"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M7 14l5-5 5 5H7z"/></svg> + 3,842</span></div>
+    <div class="kpi-sub">有效代码行（不含空行与纯注释行）</div>
   </div>
 
   <!-- 4. Top 5% Risk -->
@@ -721,7 +906,7 @@ svg { display: block; flex-shrink: 0; }
     </div>
     <div style="display:flex;justify-content:space-between;align-items:flex-end;">
       <div>
-        <div class="kpi-value" style="color:{% if self.avg_confidence() >= 0.8 %}var(--green){% else if self.avg_confidence() >= 0.5 %}var(--yellow){% else %}var(--orange){% endif %}">{{ self.fmt_f64val(self.avg_confidence(), 2) }}</div>
+        <div class="kpi-value {{ self.confidence_color_class_val(self.avg_confidence()) }}">{{ self.fmt_f64val(self.avg_confidence(), 2) }}</div>
         <div class="kpi-sub">/ 1.00 &middot; {% if self.avg_confidence() >= 0.8 %}<span class="pill pill-low"><span class="dot"></span>高</span>{% else if self.avg_confidence() >= 0.5 %}<span class="pill pill-medium"><span class="dot"></span>中</span>{% else %}<span class="pill pill-high"><span class="dot"></span>低</span>{% endif %}</div>
       </div>
       <div style="text-align:right;">
@@ -742,11 +927,12 @@ svg { display: block; flex-shrink: 0; }
       </div>
     </div>
     <div class="treemap-container" id="treemap"></div>
+    <div id="treemap-rest"></div>
     <div class="treemap-legend">
-      <span><span class="swatch" style="background:var(--green)"></span>低风险 &lt;30</span>
-      <span><span class="swatch" style="background:var(--yellow)"></span>中风险 30-60</span>
-      <span><span class="swatch" style="background:var(--orange)"></span>高风险 60-80</span>
-      <span><span class="swatch" style="background:var(--red)"></span>严重风险 &gt;80</span>
+      <span><span class="swatch" style="background:var(--risk-low)"></span>低风险 &lt;30</span>
+      <span><span class="swatch" style="background:var(--risk-mid)"></span>中风险 30-60</span>
+      <span><span class="swatch" style="background:var(--risk-high)"></span>高风险 60-80</span>
+      <span><span class="swatch" style="background:var(--risk-critical)"></span>严重风险 &gt;80</span>
     </div>
   </div>
 
@@ -760,61 +946,54 @@ svg { display: block; flex-shrink: 0; }
         <button class="btn" style="padding:5px 11px;font-size:11.5px;" onclick="location.hash='#all-files'">查看全部文件 &rarr;</button>
       </div>
     </div>
-    <div class="risk-table-wrap">
-      <table class="risk-table">
-        <thead>
-          <tr>
-            <th style="width:38%;">文件路径</th>
-            <th>基础风险分</th>
-            <th>趋势系数</th>
-            <th>最终热力值</th>
-            <th>置信度</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for file in report.top_risk_files %}
-          <tr data-filepath="{{ file.raw.path }}" onclick="_rbToggleFileDetail('{{ file.raw.path }}')">
-            <td>
-              <div class="path-cell">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-                <span title="{{ file.raw.path }}">{{ file.raw.path }}</span>
+    <div class="risk-card-list">
+      {% for file in report.top_risk_files %}
+      <div class="risk-card" data-filepath="{{ file.raw.path }}">
+        <button class="risk-card-head" type="button" onclick="_rbToggleFileDetail('{{ file.raw.path }}')">
+          <span class="risk-card-path" title="{{ file.raw.path }}">{{ file.raw.path }}</span>
+          <span class="risk-card-heat">
+            <span class="risk-card-score {{ self.score_color_class(file.final_heat_score) }}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+            <div class="heat-bar heat-bar-sm"><div class="heat-bar-fill {{ self.heat_bar_class(file.final_heat_score) }}" data-w="{{ self.fmt_f64v(file.final_heat_score, 0) }}"></div></div>
+          </span>
+          <span class="{{ self.confidence_pill_class(file.consistency.coefficient) }} pill"><span class="dot"></span>置信 {{ self.fmt_f64(file.consistency.coefficient, 2) }}</span>
+          {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}
+          <svg viewBox="0 0 20 20" width="16" height="16" title="疑似历史重写" style="color:var(--risk-high)"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M10 6v5M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          {% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}
+          <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测正常" style="color:var(--risk-low)"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M6 10l3 3 5-5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          {% else %}
+          <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测未知" style="color:var(--text-muted)"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M10 7v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          {% endif %}
+          <svg class="risk-card-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="risk-card-body" data-file="{{ self.path_to_dom_id(file.raw.path) }}">
+          <div class="formula-overview">
+            <div class="fo-title">三层公式中间值（百分位越高，该层对最终分数的贡献越大）</div>
+            <div class="fo-bars">
+              <div class="fo-row">
+                <span class="fo-label">复杂度</span>
+                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.complexity_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.complexity_risk, 0) }}"></div></div>
+                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.complexity_risk) }}</span>
               </div>
-            </td>
-            <td style="font-variant-numeric:tabular-nums;">{{ self.fmt_f64(file.base_risk_score, 1) }}</td>
-            <td style="font-variant-numeric:tabular-nums;">{{ self.fmt_f64(file.trend_coefficient, 2) }}</td>
-            <td>
-              <div class="heat-score">
-                <span style="color:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
-                <div class="heat-bar"><div class="heat-bar-fill" style="width:{{ self.fmt_f64v(file.final_heat_score, 0) }}%;background:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %};"></div></div>
+              <div class="fo-row">
+                <span class="fo-label">历史</span>
+                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.history_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.history_risk, 0) }}"></div></div>
+                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.history_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.history_risk) }}</span>
               </div>
-            </td>
-            <td>
-              <div style="display:flex;align-items:center;gap:6px;">
-                <span class="{% if file.consistency.coefficient >= 0.8 %}pill-low{% else if file.consistency.coefficient >= 0.5 %}pill-medium{% else %}pill-high{% endif %} pill">
-                  <span class="dot"></span>{{ self.fmt_f64(file.consistency.coefficient, 2) }}
-                </span>
-                {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}
-                <svg viewBox="0 0 20 20" width="16" height="16" title="疑似历史重写" style="color:var(--orange)">
-                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
-                  <path d="M10 6v5M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                </svg>
-                {% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}
-                <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测正常" style="color:var(--green)">
-                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
-                  <path d="M6 10l3 3 5-5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                {% else %}
-                <svg viewBox="0 0 20 20" width="16" height="16" title="历史重写检测未知" style="color:var(--text-muted)">
-                  <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.2" fill="none"/>
-                  <path d="M10 7v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                </svg>
-                {% endif %}
+              <div class="fo-row">
+                <span class="fo-label">依赖</span>
+                <div class="fo-bar"><div class="fo-bar-fill {{ self.risk_tier_class(file.percentiles.dependency_risk) }}" data-w="{{ self.fmt_f64v(file.percentiles.dependency_risk, 0) }}"></div></div>
+                <span class="fo-row-value">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }} &middot; {{ self.risk_level(file.percentiles.dependency_risk) }}</span>
               </div>
-            </td>
-          </tr>
-          <tr class="file-detail" id="expanded-{{ self.path_to_dom_id(file.raw.path) }}">
-            <td colspan="5" style="padding:0;border-bottom:none;">
-              <div class="detail-inner" data-file="{{ self.path_to_dom_id(file.raw.path) }}">
+            </div>
+            <div class="fo-flow">
+              <span>base <span class="fo-stage">{{ self.fmt_f64(file.base_risk_score, 1) }}</span></span>
+              <span class="fo-op">&times;</span>
+              <span>trend <span class="fo-stage">{{ self.fmt_f64(file.trend_coefficient, 2) }}</span></span>
+              <span class="fo-op">&rarr;</span>
+              <span>final <span class="fo-stage {{ self.score_color_class(file.final_heat_score) }}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span></span>
+            </div>
+          </div>
+          <div class="detail-inner" data-file="{{ self.path_to_dom_id(file.raw.path) }}">
                 <div class="detail-col">
                   <div class="detail-tabs" data-tabs>
                     <span class="detail-tab active" data-tab-idx="0">原始指标</span>
@@ -844,7 +1023,7 @@ svg { display: block; flex-shrink: 0; }
                       <div class="metric-item">
                         <span class="mlabel">最高 CVE 严重度</span>
                         <span class="mvalue">
-                          <span class='{% if self.severity_eq(file.raw.max_cve_severity, "Low") %}pill-low{% else if self.severity_eq(file.raw.max_cve_severity, "Medium") %}pill-medium{% else if self.severity_eq(file.raw.max_cve_severity, "High") %}pill-high{% else if self.severity_eq(file.raw.max_cve_severity, "Critical") %}pill-critical{% else %}pill-muted{% endif %} pill'>
+                          <span class="{{ self.severity_pill_class(file.raw.max_cve_severity) }} pill">
                             <span class="dot"></span>{{ self.severity_text(file.raw.max_cve_severity) }}
                           </span>
                         </span>
@@ -857,15 +1036,15 @@ svg { display: block; flex-shrink: 0; }
                     <div class="status-grid">
                       <div class="status-item">
                         <span class="slabel">复杂度 %</span>
-                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.complexity_risk < 30.0 %}var(--green){% else if file.percentiles.complexity_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</span>
+                        <span class="mvalue {{ self.risk_color_class(file.percentiles.complexity_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.complexity_risk, 1) }}</span>
                       </div>
                       <div class="status-item">
                         <span class="slabel">历史 %</span>
-                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.history_risk < 30.0 %}var(--green){% else if file.percentiles.history_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</span>
+                        <span class="mvalue {{ self.risk_color_class(file.percentiles.history_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.history_risk, 1) }}</span>
                       </div>
                       <div class="status-item">
                         <span class="slabel">依赖 %</span>
-                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.percentiles.dependency_risk < 30.0 %}var(--green){% else if file.percentiles.dependency_risk < 60.0 %}var(--yellow){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</span>
+                        <span class="mvalue {{ self.risk_color_class(file.percentiles.dependency_risk) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.percentiles.dependency_risk, 1) }}</span>
                       </div>
                       <div class="status-item">
                         <span class="slabel">维度汇总</span>
@@ -897,13 +1076,13 @@ svg { display: block; flex-shrink: 0; }
                     <div class="status-grid">
                       <div class="status-item">
                         <span class="slabel">覆盖率报告状态</span>
-                        <div class="c-status" style="color:{% if file.consistency.coverage_report_stale %}var(--orange){% else %}var(--green){% endif %}">
+                        <div class="c-status {{ self.flag_color_class(file.consistency.coverage_report_stale) }}">
                           {% if file.consistency.coverage_report_stale %}过期{% else %}最新{% endif %}
                         </div>
                       </div>
                       <div class="status-item">
                         <span class="slabel">Git 历史状态</span>
-                        <div class="c-status" style="color:{% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}var(--orange){% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}var(--green){% else %}var(--text-muted){% endif %}">
+                        <div class="c-status {{ self.history_rewrite_color_class(file.consistency.history_rewrite) }}">
                           {% if self.is_history_rewrite_detected(file.consistency.history_rewrite) %}警告
                           {% else if self.is_history_rewrite_not_detected(file.consistency.history_rewrite) %}正常
                           {% else %}未知{% endif %}
@@ -911,13 +1090,13 @@ svg { display: block; flex-shrink: 0; }
                       </div>
                       <div class="status-item">
                         <span class="slabel">Lockfile 状态</span>
-                        <div class="c-status" style="color:{% if file.consistency.lockfile_mismatch %}var(--orange){% else %}var(--green){% endif %}">
+                        <div class="c-status {{ self.flag_color_class(file.consistency.lockfile_mismatch) }}">
                           {% if file.consistency.lockfile_mismatch %}不匹配{% else %}一致{% endif %}
                         </div>
                       </div>
                       <div class="status-item">
                         <span class="slabel">一致性系数</span>
-                        <span class="mvalue" style="font-family:var(--font-mono);font-weight:600;color:{% if file.consistency.coefficient >= 0.8 %}var(--green){% else if file.consistency.coefficient >= 0.5 %}var(--yellow){% else %}var(--orange){% endif %}">{{ self.fmt_f64(file.consistency.coefficient, 2) }} / 1.00</span>
+                        <span class="mvalue {{ self.confidence_color_class(file.consistency.coefficient) }}" style="font-family:var(--font-mono);font-weight:600;">{{ self.fmt_f64(file.consistency.coefficient, 2) }} / 1.00</span>
                       </div>
                     </div>
                     {% if file.consistency.coefficient < 0.7 %}
@@ -956,7 +1135,7 @@ svg { display: block; flex-shrink: 0; }
                         <span class="stage-num">3</span>
                         <span class="stage-label">最终热力值 = 基础风险分 x 趋势系数</span>
                         <span class="stage-arrow">&rarr;</span>
-                        <span class="stage-result" style="background:{% if file.final_heat_score < 60.0 %}var(--yellow-bg);color:var(--yellow){% else %}var(--red-bg);color:var(--red){% endif %};">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+                        <span class="stage-result {{ self.final_stage_class(file.final_heat_score) }}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
                       </div>
                     </div>
                   </div>
@@ -971,7 +1150,7 @@ svg { display: block; flex-shrink: 0; }
                     {% for v in report.dependency_findings %}
                       {% if self.vuln_affects_file(loop.index0, file.raw.path) %}
                       <div class="vuln-item">
-                        <span class='pill {% if self.vuln_severity_eq(loop.index0, "Low") %}pill-low{% else if self.vuln_severity_eq(loop.index0, "Medium") %}pill-medium{% else if self.vuln_severity_eq(loop.index0, "High") %}pill-high{% else %}pill-critical{% endif %}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
+                        <span class='pill {{ self.vuln_pill_class(loop.index0) }}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
                         <div>
                           <div class="vpkg">{{ v.package_name }} &nbsp;·&nbsp; <span class="vdetail">当前版本 <span style="font-family:var(--font-mono);color:var(--text-secondary);">{{ v.version }}</span></span></div>
                           <div class="vdetail" style="margin-top:2px;">
@@ -987,14 +1166,12 @@ svg { display: block; flex-shrink: 0; }
                   </div>
                 </div>
               </div>
-            </td>
-          </tr>
+            </div>
+          </div>
           {% endfor %}
           {% if report.top_risk_files.is_empty() %}
-          <tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">Top 风险文件为空（低风险仓库）</td></tr>
+          <div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--bg-deep);border:1px dashed var(--border-light);border-radius:var(--radius-xs);">Top 风险文件为空（低风险仓库）</div>
           {% endif %}
-        </tbody>
-      </table>
     </div>
   </div>
 </div>
@@ -1036,8 +1213,8 @@ svg { display: block; flex-shrink: 0; }
           <td style="font-variant-numeric:tabular-nums;">{{ file.raw.commit_count }}</td>
           <td>
             <div class="heat-score">
-              <span style="color:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
-              <div class="heat-bar"><div class="heat-bar-fill" style="width:{{ self.fmt_f64v(file.final_heat_score, 0) }}%;background:{% if file.final_heat_score < 30.0 %}var(--green){% else if file.final_heat_score < 60.0 %}var(--yellow){% else if file.final_heat_score < 80.0 %}var(--orange){% else %}var(--red){% endif %};"></div></div>
+              <span class="{{ self.score_color_class(file.final_heat_score) }}">{{ self.fmt_f64(file.final_heat_score, 1) }}</span>
+              <div class="heat-bar"><div class="heat-bar-fill {{ self.heat_bar_class(file.final_heat_score) }}" data-w="{{ self.fmt_f64v(file.final_heat_score, 0) }}"></div></div>
             </div>
           </td>
         </tr>
@@ -1064,7 +1241,7 @@ svg { display: block; flex-shrink: 0; }
       {% else %}
       {% for v in report.dependency_findings %}
       <div class="vuln-item">
-        <span class='pill {% if self.vuln_severity_eq(loop.index0, "Low") %}pill-low{% else if self.vuln_severity_eq(loop.index0, "Medium") %}pill-medium{% else if self.vuln_severity_eq(loop.index0, "High") %}pill-high{% else %}pill-critical{% endif %}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
+        <span class='pill {{ self.vuln_pill_class(loop.index0) }}'><span class="dot"></span>CVE {{ self.vuln_severity_text(loop.index0) }}</span>
         <div>
           <div class="vpkg">{{ v.package_name }} {{ v.version }} &nbsp;<span style="color:var(--text-muted);font-size:11px;">&mdash; {{ v.ecosystem }}</span></div>
           <div class="vdetail" style="margin-top:2px;">
@@ -1126,7 +1303,7 @@ svg { display: block; flex-shrink: 0; }
       </div>
       <p style="margin-top:10px;">
         数据覆盖度：
-        <span class="pill {% if self.avg_confidence() >= 0.8 %}pill-low{% else if self.avg_confidence() >= 0.5 %}pill-medium{% else %}pill-high{% endif %}"><span class="dot"></span>已填充 &middot; 算法 {{ report.analysis_version }}</span>
+        <span class="pill {{ self.confidence_pill_class_val(self.avg_confidence()) }}"><span class="dot"></span>已填充 &middot; 算法 {{ report.analysis_version }}</span>
       </p>
       <p style="margin-top:6px;">
         CVE 数据源：
@@ -1164,6 +1341,18 @@ const REPORT_DATA = {{report_data_json|safe}};
   // ========== Utilities ==========
   var $ = function (id) { return document.getElementById(id); };
 
+  // 读取 :root 上定义的 CSS 变量（保持 JS 与 CSS 色阶同源）
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // #rrggbb -> rgba(r, g, b, a)
+  function hexToRgba(hex, alpha) {
+    var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return 'rgba(120, 140, 180, ' + alpha + ')';
+    return 'rgba(' + parseInt(m[1], 16) + ', ' + parseInt(m[2], 16) + ', ' + parseInt(m[3], 16) + ', ' + alpha + ')';
+  }
+
   function showToast(msg) {
     var t = document.createElement('div');
     t.className = 'toast';
@@ -1172,11 +1361,17 @@ const REPORT_DATA = {{report_data_json|safe}};
     setTimeout(function () { t.remove(); }, 2200);
   }
 
+  // 风险档位：<30 低 / <60 中 / <80 高 / ≥80 严重（与 CSS .tier-* 完全一致）
+  function riskTier(score) {
+    var s = score || 0;
+    if (s < 30) return 'low';
+    if (s < 60) return 'mid';
+    if (s < 80) return 'high';
+    return 'critical';
+  }
+
   function getScoreColor(score) {
-    if (score < 30) return '#34d399';
-    if (score < 60) return '#fbbf24';
-    if (score < 80) return '#f97316';
-    return '#ef4444';
+    return cssVar('--risk-' + riskTier(score));
   }
 
   function getScoreBg(score) {
@@ -1185,6 +1380,18 @@ const REPORT_DATA = {{report_data_json|safe}};
     if (score < 80) return 'pill-high';
     return 'pill-critical';
   }
+
+  // 动态数值注入：环形 conic 百分比与进度条宽度。
+  // 值通过 data-* 属性输出，避免在 style 属性里内嵌模板语法。
+  (function () {
+    var ring = document.querySelector('.ring');
+    if (ring && ring.getAttribute('data-p')) {
+      ring.style.setProperty('--p', ring.getAttribute('data-p'));
+    }
+    document.querySelectorAll('[data-w]').forEach(function (el) {
+      el.style.width = el.getAttribute('data-w') + '%';
+    });
+  })();
 
   // ========== Navigation ==========
   document.querySelectorAll('.sidebar-nav a').forEach(function (link) {
@@ -1205,359 +1412,190 @@ const REPORT_DATA = {{report_data_json|safe}};
   });
 
   // ========== KPI Ring Chart ==========
-  (function () {
-    var c = $('ring-chart');
-    if (!c) return;
-    var ctx = c.getContext('2d');
-    var dpr = window.devicePixelRatio || 1;
-    var size = 140;
-    c.width = size * dpr; c.height = size * dpr;
-    c.style.width = size + 'px'; c.style.height = size + 'px';
-    ctx.scale(dpr, dpr);
-    var data = (typeof REPORT_DATA !== 'undefined') ? REPORT_DATA : null;
-    var score = data ? data.repo_total_heat_score : 0;
-    var cx = size / 2, cy = size / 2, r = 55, w = 11;
-    // Track
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(79, 140, 255, 0.1)';
-    ctx.lineWidth = w;
-    ctx.stroke();
-    // Gradient
-    var grad = ctx.createLinearGradient(0, 0, size, size);
-    grad.addColorStop(0, getScoreColor(score));
-    grad.addColorStop(1, getScoreColor(score * 0.7));
-    ctx.beginPath();
-    var pct = Math.max(0, Math.min(1, score / 100));
-    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * pct);
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = w;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  })();
+  // 已由纯 CSS conic-gradient（.ring）实现，见模板 KPI 卡片
 
-  // ========== Treemap (Canvas, hierarchical) ==========
+  // ========== Treemap (CSS div) ==========
   (function () {
     var container = $('treemap');
     if (!container) return;
-    var canvas = document.createElement('canvas');
+    var restHost = $('treemap-rest');
     var tooltip = document.createElement('div');
     tooltip.className = 'treemap-tooltip';
     tooltip.style.display = 'none';
-    container.appendChild(canvas);
     container.appendChild(tooltip);
 
     var data = (typeof REPORT_DATA !== 'undefined') ? REPORT_DATA : { files: [] };
 
-    // Build tree: directory -> list of files
-    function buildTree(files) {
-      var root = { name: '', children: {}, files: [], loc: 0, score: 0 };
-      files.forEach(function (f) {
-        var path = (f.raw && f.raw.path) || '';
-        var loc = (f.raw && f.raw.loc) || 0;
-        var score = f.final_heat_score || 0;
-        var parts = path.split('/').filter(Boolean);
-        if (parts.length < 2) {
-          root.files.push({ name: parts[0] || path, loc: loc, score: score });
-          root.loc += loc;
-        } else {
-          var dir = root;
-          var dpath = '';
-          for (var i = 0; i < parts.length - 1; i++) {
-            var p = parts[i];
-            dpath = dpath ? (dpath + '/' + p) : p;
-            if (!dir.children[p]) {
-              dir.children[p] = { name: dpath, children: {}, files: [], loc: 0, score: 0 };
-            }
-            dir = dir.children[p];
-          }
-          var fname = parts[parts.length - 1];
-          dir.files.push({ name: fname, loc: loc, score: score, fullPath: path });
-          dir.loc += loc;
-          root.loc += loc;
-        }
+    // 扁平文件列表：面积 = LOC，颜色 = 热力档位
+    var cells = [];
+    (data.files || []).forEach(function (f) {
+      var loc = (f.raw && f.raw.loc) || 0;
+      if (loc <= 0) return;
+      cells.push({
+        path: (f.raw && f.raw.path) || '',
+        loc: loc,
+        score: f.final_heat_score || 0
       });
-      return root;
+    });
+
+    // 性能降级：超过 500 个文件只渲染 Top 100（按 LOC），其余折叠进列表
+    var DEGRADE_LIMIT = 500;
+    var RENDER_TOP = 100;
+    var restItems = [];
+    if (cells.length > DEGRADE_LIMIT) {
+      cells.sort(function (a, b) { return b.loc - a.loc; });
+      restItems = cells.slice(RENDER_TOP);
+      cells = cells.slice(0, RENDER_TOP);
+    }
+    if (cells.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'treemap-empty';
+      empty.textContent = '暂无文件数据';
+      container.appendChild(empty);
+      return;
     }
 
     function rectArea(r) { return (r.w > 0 && r.h > 0) ? r.w * r.h : 0; }
 
+    // squarified treemap：输入坐标矩形，输出每个 item 的矩形
     function squarify(items, rect, result, depth) {
       if (items.length === 0 || rect.w <= 0 || rect.h <= 0) return;
       if (items.length === 1) {
-        result.push({
-          x: rect.x, y: rect.y, w: rect.w, h: rect.h,
-          item: items[0], depth: depth
-        });
+        result.push({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, item: items[0], depth: depth });
         return;
       }
       var total = items.reduce(function (s, i) { return s + i.loc; }, 0) || 1;
-      var rectAreaVal = rectArea(rect);
-      // Scale loc to area
-      var scale = rectAreaVal / total;
-
+      var scale = rectArea(rect) / total;
       var horizontal = rect.w >= rect.h;
       var side = horizontal ? rect.h : rect.w;
-
-      // Greedy squarification: place items one by one into the current row
-      var row = [];
-      var rowLoc = 0;
-      var rowArea = 0;
-      var worst = Infinity;
-
-      function worstRatio() {
-        if (row.length === 0) return Infinity;
-        var rowSide = horizontal ? (rowArea / side) : (rowArea / side);
-        var rowSidePx = rowArea / side;
-        var ratioMax = 0;
-        for (var i = 0; i < row.length; i++) {
-          var a = row[i].loc * scale;
-          var shortSide;
-          if (rowSidePx <= 0) { shortSide = 0; }
-          else {
-            var longSide = a / rowSidePx;
-            shortSide = Math.min(rowSidePx, longSide);
-          }
-          var ratio = (rowSidePx * rowSidePx) / (a || 1);
-          ratio = Math.max(ratio, (a || 1) / (rowSidePx * rowSidePx || 1));
-          if (ratio > ratioMax) ratioMax = ratio;
-        }
-        return ratioMax;
-      }
-
       var remaining = items.slice();
       while (remaining.length > 0) {
-        row = []; rowLoc = 0; rowArea = 0; worst = Infinity;
+        var row = []; var rowArea = 0; var worst = Infinity;
         while (remaining.length > 0) {
           var next = remaining[0];
           var tryItems = row.concat([next]);
-          // recompute worst for tryItems
-          var rw = [];
           var rl = 0;
-          for (var z = 0; z < tryItems.length; z++) {
-            rw.push(tryItems[z]);
-            rl += tryItems[z].loc;
-          }
+          tryItems.forEach(function (it) { rl += it.loc; });
           var ra = rl * scale;
           var rspx = (ra > 0 && side > 0) ? (ra / side) : 0;
           var wr = 0;
-          for (var z2 = 0; z2 < rw.length; z2++) {
-            var a2 = rw[z2].loc * scale;
+          for (var z = 0; z < tryItems.length; z++) {
+            var a2 = tryItems[z].loc * scale;
             var ls = rspx > 0 ? (a2 / rspx) : 0;
             var s2 = Math.min(rspx, ls);
             var r2 = (rspx * rspx) / (a2 || 1);
             r2 = Math.max(r2, (a2 || 1) / (rspx * rspx || 1));
             if (r2 > wr) wr = r2;
           }
-          if (wr <= worst) {
-            worst = wr;
-            row = tryItems;
-            rowLoc = rl;
-            rowArea = ra;
-            remaining.shift();
-          } else {
-            break;
-          }
+          if (wr <= worst) { worst = wr; row = tryItems; rowArea = ra; remaining.shift(); }
+          else { break; }
         }
-
-        // Draw row
-        var rowRect;
         var rowSidePx = (rowArea > 0 && side > 0) ? (rowArea / side) : 0;
-        var rowItems = [];
         if (horizontal) {
-          rowRect = { x: rect.x, y: rect.y, w: rowSidePx, h: rect.h };
           var posY = rect.y;
           for (var i = 0; i < row.length; i++) {
             var fArea = row[i].loc * scale;
             var hRect = rowSidePx > 0 ? (fArea / rowSidePx) : 0;
-            rowItems.push({
-              x: rect.x, y: posY, w: rowSidePx, h: hRect,
-              item: row[i], depth: depth
-            });
+            result.push({ x: rect.x, y: posY, w: rowSidePx, h: hRect, item: row[i], depth: depth });
             posY += hRect;
           }
-          rect.x += rowSidePx;
-          rect.w -= rowSidePx;
+          rect.x += rowSidePx; rect.w -= rowSidePx;
         } else {
-          rowRect = { x: rect.x, y: rect.y, w: rect.w, h: rowSidePx };
           var posX = rect.x;
           for (var j = 0; j < row.length; j++) {
             var fArea2 = row[j].loc * scale;
             var wRect = rowSidePx > 0 ? (fArea2 / rowSidePx) : 0;
-            rowItems.push({
-              x: posX, y: rect.y, w: wRect, h: rowSidePx,
-              item: row[j], depth: depth
-            });
+            result.push({ x: posX, y: rect.y, w: wRect, h: rowSidePx, item: row[j], depth: depth });
             posX += wRect;
           }
-          rect.y += rowSidePx;
-          rect.h -= rowSidePx;
-        }
-        for (var k = 0; k < rowItems.length; k++) {
-          result.push(rowItems[k]);
+          rect.y += rowSidePx; rect.h -= rowSidePx;
         }
         side = horizontal ? rect.h : rect.w;
         horizontal = rect.w >= rect.h;
       }
     }
 
-    var root = buildTree(data.files || []);
-    // Gather top-level dirs + files as treemap input
-    var topItems = [];
-    Object.keys(root.children).forEach(function (k) {
-      var d = root.children[k];
-      var avgScore = d.loc > 0
-        ? d.files.reduce(function (s, f) { return s + f.score * f.loc; }, 0) / d.loc
-        : 0;
-      topItems.push({
-        name: d.name, isDir: true, loc: d.loc, score: avgScore, children: d.files
-      });
-    });
-    root.files.forEach(function (f) {
-      topItems.push({ name: f.name, isDir: false, loc: f.loc, score: f.score, fullPath: f.fullPath || f.name });
-    });
-    topItems.sort(function (a, b) { return b.loc - a.loc; });
-
     function render() {
+      container.querySelectorAll('.treemap-cell').forEach(function (el) { el.remove(); });
       var w = container.clientWidth;
       var h = container.clientHeight;
-      var dpr = window.devicePixelRatio || 1;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      canvas.style.width = w + 'px';
-      canvas.style.height = h + 'px';
-      var ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-      ctx.clearRect(0, 0, w, h);
-
       var rect = { x: 2, y: 2, w: w - 4, h: h - 4 };
-      var result = [];
-      squarify(topItems, rect, result, 0);
-      container._treemapBoxes = [];
-      for (var i = 0; i < result.length; i++) {
-        var b = result[i];
-        if (b.w < 0.5 || b.h < 0.5) continue;
-        var color = getScoreColor(b.item.score || 0);
-        // Shade directories slightly darker
-        var isDir = !!b.item.isDir;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = isDir ? 0.78 : 0.88;
-        ctx.fillRect(b.x, b.y, b.w, b.h);
-        ctx.globalAlpha = 1;
-        // Inner border
-        ctx.strokeStyle = 'rgba(11, 15, 26, 0.55)';
-        ctx.lineWidth = isDir ? 1.5 : 1;
-        ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
-
-        // Label
-        var padding = isDir ? 10 : 6;
-        var availW = b.w - padding * 2;
-        var availH = b.h - padding * 2;
-        if (availW > 40 && availH > 22) {
-          ctx.fillStyle = 'rgba(11, 15, 26, 0.88)';
-          ctx.font = (isDir ? '600 ' : '500 ') + Math.min(13, Math.max(9, Math.min(availH - 4, availW / 6))) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
-          ctx.textBaseline = 'top';
-          var label = b.item.name || '';
-          // Truncate
-          var maxChars = Math.max(3, Math.floor(availW / 8));
-          if (label.length > maxChars) label = label.substring(0, maxChars - 1) + '\u2026';
-          var textW = ctx.measureText(label).width;
-          if (isDir && availH > 50) {
-            var locText = (b.item.loc || 0).toLocaleString() + ' LOC';
-            var scoreText = (b.item.score || 0).toFixed(1);
-            var subFont = Math.min(11, Math.max(8, Math.min(availH / 5, availW / 10))) + 'px -apple-system, system-ui, sans-serif';
-            ctx.font = '500 ' + subFont;
-            ctx.fillStyle = 'rgba(11, 15, 26, 0.82)';
-            ctx.fillText(locText, b.x + padding, b.y + padding + 2);
-            ctx.font = '600 ' + Math.min(13, Math.max(9, Math.min(availH - 4, availW / 6))) + 'px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
-            ctx.fillStyle = 'rgba(11, 15, 26, 0.92)';
-            ctx.fillText(label, b.x + padding, b.y + padding + 18);
-            ctx.font = '700 ' + subFont;
-            ctx.fillStyle = 'rgba(11, 15, 26, 0.9)';
-            ctx.fillText(scoreText, b.x + b.w - padding - ctx.measureText(scoreText).width, b.y + padding + 2);
-          } else {
-            ctx.fillText(label, b.x + padding, b.y + Math.max(2, (availH - 14) / 2));
-          }
-        }
-        container._treemapBoxes.push(b);
-      }
-    }
-    render();
-    window.addEventListener('resize', render);
-
-    // Hover
-    function canvasCoords(e) {
-      var r = canvas.getBoundingClientRect();
-      return { x: e.clientX - r.left, y: e.clientY - r.top };
-    }
-    canvas.addEventListener('mousemove', function (e) {
-      var p = canvasCoords(e);
-      var boxes = container._treemapBoxes || [];
-      var hit = null;
+      var boxes = [];
+      squarify(cells.slice(), rect, boxes, 0);
       for (var i = 0; i < boxes.length; i++) {
         var b = boxes[i];
-        if (p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) {
-          hit = b; break;
+        if (b.w < 6 || b.h < 4) continue; // 过小矩形不渲染，避免视觉噪点
+        var cell = document.createElement('div');
+        cell.className = 'treemap-cell tier-' + riskTier(b.item.score);
+        cell.style.left = b.x + 'px';
+        cell.style.top = b.y + 'px';
+        cell.style.width = b.w + 'px';
+        cell.style.height = b.h + 'px';
+        cell._item = b.item;
+        // 面积足够才显示文件名
+        if (b.w > 46 && b.h > 20) {
+          var label = document.createElement('span');
+          label.className = 'treemap-label';
+          label.textContent = b.item.path.split('/').pop();
+          label.title = b.item.path;
+          cell.appendChild(label);
         }
+        cell.addEventListener('mousemove', onHover);
+        cell.addEventListener('mouseleave', hideTooltip);
+        container.appendChild(cell);
       }
-      if (hit) {
-        var cr = container.getBoundingClientRect();
-        tooltip.style.display = 'block';
-        tooltip.style.left = (hit.x + hit.w + 8) + 'px';
-        tooltip.style.top = (hit.y + 4) + 'px';
-        var name = hit.item.isDir ? (hit.item.name + '/ [目录]') : (hit.item.fullPath || hit.item.name);
-        var col = getScoreColor(hit.item.score || 0);
-        tooltip.innerHTML = '<div class="tpath">' + name + '</div>'
-          + '<div class="tmetric">LOC: <span class="tscore" style="color:var(--text-primary)">' + (hit.item.loc || 0).toLocaleString() + '</span></div>'
-          + '<div class="tmetric">热力值: <span class="tscore" style="color:' + col + '">' + (hit.item.score || 0).toFixed(1) + '</span></div>';
-        // Clamp to right
-        var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-        if (hit.x + hit.w + 12 + tw > container.clientWidth) {
-          tooltip.style.left = (hit.x - tw - 6) + 'px';
-        }
-        if (hit.y + 4 + th > container.clientHeight) {
-          tooltip.style.top = (container.clientHeight - th - 2) + 'px';
-        }
-      } else {
-        tooltip.style.display = 'none';
-      }
-    });
-    canvas.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
-  })();
-
-  // ========== Mini Trend Sparklines (KPI cards) ==========
-  function drawSparkline(canvasId, data, color) {
-    var c = $(canvasId);
-    if (!c || !data || data.length < 2) return;
-    var dpr = window.devicePixelRatio || 1;
-    var w = 88, h = 28;
-    c.width = w * dpr; c.height = h * dpr;
-    c.style.width = w + 'px'; c.style.height = h + 'px';
-    var ctx = c.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
-    var max = Math.max.apply(null, data), min = Math.min.apply(null, data);
-    var range = (max - min) || 1;
-    var padL = 0, padR = 0, padT = 3, padB = 3;
-    ctx.strokeStyle = color; ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    for (var i = 0; i < data.length; i++) {
-      var x = padL + (i / (data.length - 1)) * (w - padL - padR);
-      var y = padT + (1 - (data[i] - min) / range) * (h - padT - padB);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
-    ctx.stroke();
-    // Fill under
-    var lastIdx = data.length - 1;
-    var lastX = padL + (lastIdx / lastIdx) * (w - padL - padR);
-    var baseY = h - padB;
-    ctx.lineTo(lastX, baseY); ctx.lineTo(padL, baseY); ctx.closePath();
-    ctx.fillStyle = color + '22';
-    ctx.fill();
-  }
 
-  drawSparkline('spark-files', [10, 18, 22, 19, 25, 28, 24, 32, 30, 34, 38, 42, 45, 48, 52], 'var(--accent)');
-  drawSparkline('spark-loc', [120, 140, 155, 170, 165, 190, 210, 225, 238, 250, 275, 290, 310, 328, 340], 'var(--green)');
+    function onHover(e) {
+      var item = e.currentTarget._item;
+      var cr = container.getBoundingClientRect();
+      tooltip.style.display = 'block';
+      var x = e.clientX - cr.left + 14;
+      var y = e.clientY - cr.top + 10;
+      tooltip.style.left = x + 'px';
+      tooltip.style.top = y + 'px';
+      var col = getScoreColor(item.score);
+      tooltip.innerHTML = '<div class="tpath">' + item.path + '</div>'
+        + '<div class="tmetric">LOC: <span class="tscore">' + item.loc.toLocaleString() + '</span></div>'
+        + '<div class="tmetric">热力值: <span class="tscore" style="color:' + col + '">' + item.score.toFixed(1) + '</span></div>';
+      var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+      if (x + tw > cr.width) tooltip.style.left = (e.clientX - cr.left - tw - 8) + 'px';
+      if (y + th > cr.height) tooltip.style.top = (e.clientY - cr.top - th - 8) + 'px';
+    }
+
+    function hideTooltip() { tooltip.style.display = 'none'; }
+
+    // 降级折叠区：其余文件列表
+    function renderRest() {
+      if (!restHost || restItems.length === 0) return;
+      var restLoc = restItems.reduce(function (s, i) { return s + i.loc; }, 0);
+      var details = document.createElement('details');
+      details.className = 'treemap-rest';
+      var summary = document.createElement('summary');
+      summary.textContent = '其余 ' + restItems.length + ' 个文件（合计 ' + restLoc.toLocaleString() + ' LOC，按 LOC 降序）';
+      details.appendChild(summary);
+      var list = document.createElement('div');
+      list.className = 'treemap-rest-list';
+      restItems.forEach(function (it) {
+        var row = document.createElement('div');
+        row.className = 'rest-row';
+        var name = document.createElement('span');
+        name.textContent = it.path;
+        var val = document.createElement('span');
+        val.className = 'tier-' + riskTier(it.score);
+        val.textContent = it.loc.toLocaleString() + ' LOC · ' + it.score.toFixed(1);
+        row.appendChild(name);
+        row.appendChild(val);
+        list.appendChild(row);
+      });
+      details.appendChild(list);
+      restHost.appendChild(details);
+    }
+
+    render();
+    renderRest();
+    window.addEventListener('resize', render);
+  })();
 
   // ========== Ring Chart (Top 5% pie) ==========
   (function () {
@@ -1578,8 +1616,8 @@ const REPORT_DATA = {{report_data_json|safe}};
     var start = -Math.PI / 2;
     var totalSum = total || 1;
     var segs = [
-      { v: top, color: '#ef4444' },
-      { v: rest, color: '#222c44' }
+      { v: top, color: cssVar('--risk-critical') },
+      { v: rest, color: cssVar('--bg-elevated') }
     ];
     for (var i = 0; i < segs.length; i++) {
       var s = segs[i];
@@ -1598,31 +1636,26 @@ const REPORT_DATA = {{report_data_json|safe}};
     ctx.fillStyle = 'var(--text-primary)';
     ctx.font = '600 17px -apple-system, system-ui, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ef4444';
+    ctx.fillStyle = cssVar('--risk-critical');
     ctx.fillText(((top / totalSum) * 100).toFixed(1) + '%', cx, cy - 2);
-    ctx.fillStyle = '#5d6d8c';
+    ctx.fillStyle = cssVar('--text-muted');
     ctx.font = '10px -apple-system, system-ui, sans-serif';
     ctx.fillText(top + '/' + total, cx, cy + 12);
   })();
 
-  // ========== File Detail Toggle + Tabs ==========
+  // ========== File Detail Toggle (风险卡片) + Tabs ==========
   function toggleFileDetail(path) {
-    var safeId = path.replace(/[^a-zA-Z0-9_-]/g, '_');
-    var rowId = 'expanded-' + safeId;
-    var expanded = document.getElementById(rowId);
-    var triggerRows = document.querySelectorAll('[data-filepath="' + path + '"]');
-    if (!expanded) return;
-    var isOpen = expanded.classList.contains('open');
-    document.querySelectorAll('.file-detail.open').forEach(function (d) { d.classList.remove('open'); });
-    document.querySelectorAll('.risk-table tbody tr.expanded').forEach(function (r) { r.classList.remove('expanded'); });
-    if (!isOpen) {
-      expanded.classList.add('open');
-      triggerRows.forEach(function (r) { r.classList.add('expanded'); });
-      // 如果趋势 pane 默认显示，尝试渲染趋势图
-      var trendCanvas = expanded.querySelector('[data-pane-idx="2"] canvas[data-trend-file]');
+    var card = document.querySelector('.risk-card[data-filepath="' + path + '"]');
+    if (!card) return;
+    var wasOpen = card.classList.contains('open');
+    document.querySelectorAll('.risk-card.open').forEach(function (c) { c.classList.remove('open'); });
+    if (!wasOpen) {
+      card.classList.add('open');
+      // 若趋势 pane 存在则渲染趋势图
+      var trendCanvas = card.querySelector('[data-pane-idx="2"] canvas[data-trend-file]');
       if (trendCanvas) renderTrendForCanvas(trendCanvas);
       // 绑定 tab 点击事件（仅一次）
-      bindDetailTabs(expanded);
+      bindDetailTabs(card.querySelector('.detail-inner'));
     }
   }
   // Expose
@@ -1700,7 +1733,7 @@ const REPORT_DATA = {{report_data_json|safe}};
 
     // Grid + Y axis
     ctx.strokeStyle = 'rgba(76, 100, 145, 0.1)';
-    ctx.fillStyle = '#5d6d8c';
+    ctx.fillStyle = cssVar('--text-muted');
     ctx.font = '10px ' + getComputedStyle(document.body).fontFamily;
     ctx.textBaseline = 'middle';
     var yTicks = [0, 25, 50, 75, 100];
@@ -1721,7 +1754,11 @@ const REPORT_DATA = {{report_data_json|safe}};
         var x = padL + (i / (history.length - 1)) * innerW;
         var s = history[i].base_risk_score;
         var y = padT + (1 - Math.max(0, Math.min(100, s)) / 100) * innerH;
-        points.push({ x: x, y: y, score: s, date: history[i].snapshot_date });
+        points.push({
+          x: x, y: y, score: s,
+          sha: (history[i].commit_sha || '').substring(0, 7),
+          date: history[i].commit_date
+        });
       }
     }
     if (baseRisk != null && !isNaN(baseRisk)) {
@@ -1729,16 +1766,20 @@ const REPORT_DATA = {{report_data_json|safe}};
         x: padL + innerW,
         y: padT + (1 - Math.max(0, Math.min(100, baseRisk)) / 100) * innerH,
         score: baseRisk,
+        sha: 'now',
         date: 'now'
       });
     }
 
+    // 线条颜色随最新风险值档位变化（与全站色阶一致）
+    var lineColor = points.length > 0 ? getScoreColor(points[points.length - 1].score) : cssVar('--accent');
+
     if (points.length > 1) {
-      // Gradient fill
+      // Gradient fill（同色 28% -> 0）
       var lastIdx = points.length - 1;
       var grad = ctx.createLinearGradient(0, padT, 0, padT + innerH);
-      grad.addColorStop(0, 'rgba(239, 68, 68, 0.28)');
-      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      grad.addColorStop(0, hexToRgba(lineColor, 0.28));
+      grad.addColorStop(1, hexToRgba(lineColor, 0));
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.moveTo(points[0].x, padT + innerH);
@@ -1748,7 +1789,7 @@ const REPORT_DATA = {{report_data_json|safe}};
       ctx.fill();
 
       // Line
-      ctx.strokeStyle = '#ef4444';
+      ctx.strokeStyle = lineColor;
       ctx.lineWidth = 2;
       ctx.beginPath();
       for (var k2 = 0; k2 < points.length; k2++) {
@@ -1758,7 +1799,7 @@ const REPORT_DATA = {{report_data_json|safe}};
       ctx.stroke();
 
       // Dots
-      ctx.fillStyle = '#ef4444';
+      ctx.fillStyle = lineColor;
       for (var k3 = 0; k3 < points.length; k3++) {
         ctx.beginPath();
         ctx.arc(points[k3].x, points[k3].y, 3, 0, Math.PI * 2);
@@ -1769,12 +1810,12 @@ const REPORT_DATA = {{report_data_json|safe}};
       ctx.beginPath();
       ctx.arc(points[lastIdx].x, points[lastIdx].y, 4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#ef4444';
+      ctx.strokeStyle = lineColor;
       ctx.lineWidth = 2;
       ctx.stroke();
 
       // X axis labels (first / mid / last)
-      ctx.fillStyle = '#5d6d8c';
+      ctx.fillStyle = cssVar('--text-muted');
       ctx.font = '9px ' + getComputedStyle(document.body).fontFamily;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
@@ -1789,6 +1830,45 @@ const REPORT_DATA = {{report_data_json|safe}};
         ctx.fillText(fmtDate(points[idx].date || ''), points[idx].x, padT + innerH + 6);
       }
     }
+
+    // Hover tooltip：sha 前 7 位 + 日期 + 分数
+    c._trendPoints = points;
+    var box = c.parentNode;
+    if (!box) return;
+    var tip = box.querySelector('.trend-tip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'trend-tip';
+      tip.style.display = 'none';
+      box.appendChild(tip);
+    }
+    function showTip(e) {
+      var pts = c._trendPoints || [];
+      if (pts.length < 2) return;
+      var r = c.getBoundingClientRect();
+      var mx = e.clientX - r.left;
+      var best = 0, bd = Infinity;
+      for (var i = 0; i < pts.length; i++) {
+        var d = Math.abs(pts[i].x - mx);
+        if (d < bd) { bd = d; best = i; }
+      }
+      var p = pts[best];
+      var date = (p.date && p.date !== 'now') ? String(p.date).substring(0, 10) : '现在';
+      tip.style.display = 'block';
+      var tx = e.clientX - r.left + 12;
+      var ty = e.clientY - r.top - 10;
+      tip.style.left = tx + 'px';
+      tip.style.top = ty + 'px';
+      tip.innerHTML = '<div class="tip-sha">' + (p.sha || '\u2014') + '</div>'
+        + '<div class="tip-meta">' + date + ' &middot; <span class="tip-score" style="color:' + lineColor + '">' + p.score.toFixed(1) + '</span></div>';
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      if (tx + tw > r.width) tip.style.left = (e.clientX - r.left - tw - 8) + 'px';
+      if (ty < 0) tip.style.top = '4px';
+      if (ty + th > r.height) tip.style.top = (r.height - th - 4) + 'px';
+    }
+    function hideTip() { tip.style.display = 'none'; }
+    c.addEventListener('mousemove', showTip);
+    c.addEventListener('mouseleave', hideTip);
   }
   function drawFileTrendChart(canvasId, history, baseRisk) {
     drawFileTrendChartForCanvas($(canvasId), history, baseRisk);

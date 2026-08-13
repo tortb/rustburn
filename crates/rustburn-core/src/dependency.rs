@@ -319,102 +319,112 @@ fn extract_cvss_score(database_specific: &Option<serde_json::Value>) -> Option<f
 /// 从 CVSS v3 向量字符串计算分数
 /// 这是一个简化的实现，基于关键指标估算分数
 fn calculate_cvss_v3_score(vector: &str) -> f64 {
-    // 解析向量中的关键指标
-    let mut attack_vector = 0.0;
-    let mut attack_complexity = 0.0;
-    let mut privileges_required = 0.0;
-    let mut user_interaction = 0.0;
-    let mut scope_changed = false;
-    let mut confidentiality = 0.0;
-    let mut integrity = 0.0;
-    let mut availability = 0.0;
+    compute_cvss_v3_score(&parse_cvss_v3_vector(vector))
+}
 
-    // 解析向量字符串
+/// CVSS v3 向量解析出的关键指标。
+struct CvssV3 {
+    attack_vector: f64,
+    attack_complexity: f64,
+    privileges_required: f64,
+    user_interaction: f64,
+    scope_changed: bool,
+    confidentiality: f64,
+    integrity: f64,
+    availability: f64,
+}
+
+impl Default for CvssV3 {
+    fn default() -> Self {
+        Self {
+            attack_vector: 0.0,
+            attack_complexity: 0.0,
+            privileges_required: 0.0,
+            user_interaction: 0.0,
+            scope_changed: false,
+            confidentiality: 0.0,
+            integrity: 0.0,
+            availability: 0.0,
+        }
+    }
+}
+
+/// 解析 CVSS v3 向量字符串为指标值。
+fn parse_cvss_v3_vector(vector: &str) -> CvssV3 {
+    let mut cvss = CvssV3::default();
+
     for part in vector.split('/') {
         let part = part.trim();
-        if let Some((key, value)) = part.split_once(':') {
-            match key {
-                "AV" => {
-                    attack_vector = match value {
-                        "N" => 0.85, // Network
-                        "A" => 0.62, // Adjacent
-                        "L" => 0.55, // Local
-                        "P" => 0.20, // Physical
-                        _ => 0.5,
-                    };
-                }
-                "AC" => {
-                    attack_complexity = match value {
-                        "L" => 0.77, // Low
-                        "H" => 0.44, // High
-                        _ => 0.5,
-                    };
-                }
-                "PR" => {
-                    privileges_required = match value {
-                        "N" => 0.85, // None
-                        "L" => 0.62, // Low
-                        "H" => 0.27, // High
-                        _ => 0.5,
-                    };
-                }
-                "UI" => {
-                    user_interaction = match value {
-                        "N" => 0.85, // None
-                        "R" => 0.62, // Required
-                        _ => 0.5,
-                    };
-                }
-                "S" => {
-                    scope_changed = value == "C"; // Changed
-                }
-                "C" => {
-                    confidentiality = match value {
-                        "H" => 0.56, // High
-                        "L" => 0.22, // Low
-                        "N" => 0.0,  // None
-                        _ => 0.2,
-                    };
-                }
-                "I" => {
-                    integrity = match value {
-                        "H" => 0.56, // High
-                        "L" => 0.22, // Low
-                        "N" => 0.0,  // None
-                        _ => 0.2,
-                    };
-                }
-                "A" => {
-                    availability = match value {
-                        "H" => 0.56, // High
-                        "L" => 0.22, // Low
-                        "N" => 0.0,  // None
-                        _ => 0.2,
-                    };
-                }
-                _ => {}
+        let Some((key, value)) = part.split_once(':') else {
+            continue;
+        };
+
+        match key {
+            "AV" => {
+                cvss.attack_vector = metric_value(
+                    value,
+                    &[("N", 0.85), ("A", 0.62), ("L", 0.55), ("P", 0.20)],
+                    0.5,
+                )
             }
+            "AC" => cvss.attack_complexity = metric_value(value, &[("L", 0.77), ("H", 0.44)], 0.5),
+            "PR" => {
+                cvss.privileges_required =
+                    metric_value(value, &[("N", 0.85), ("L", 0.62), ("H", 0.27)], 0.5)
+            }
+            "UI" => cvss.user_interaction = metric_value(value, &[("N", 0.85), ("R", 0.62)], 0.5),
+            "S" => cvss.scope_changed = value == "C", // Changed
+            "C" => {
+                cvss.confidentiality =
+                    metric_value(value, &[("H", 0.56), ("L", 0.22), ("N", 0.0)], 0.2)
+            }
+            "I" => {
+                cvss.integrity = metric_value(value, &[("H", 0.56), ("L", 0.22), ("N", 0.0)], 0.2)
+            }
+            "A" => {
+                cvss.availability =
+                    metric_value(value, &[("H", 0.56), ("L", 0.22), ("N", 0.0)], 0.2)
+            }
+            _ => {}
         }
     }
 
+    cvss
+}
+
+/// 按映射表查取指标值，未知取值回退到默认值。
+fn metric_value(value: &str, table: &[(&str, f64)], default: f64) -> f64 {
+    table
+        .iter()
+        .find(|(k, _)| *k == value)
+        .map(|(_, v)| *v)
+        .unwrap_or(default)
+}
+
+/// 根据 CVSS v3 指标计算基础分数（四舍五入到一位小数）。
+fn compute_cvss_v3_score(cvss: &CvssV3) -> f64 {
     // 计算 Impact Sub Score (ISS)
-    let iss: f64 = 1.0 - ((1.0 - confidentiality) * (1.0 - integrity) * (1.0 - availability));
+    let iss: f64 =
+        1.0 - ((1.0 - cvss.confidentiality) * (1.0 - cvss.integrity) * (1.0 - cvss.availability));
 
     // 计算 Impact
-    let impact = if scope_changed {
+    let impact = if cvss.scope_changed {
         7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powf(15.0)
     } else {
         6.42 * iss
     };
 
     // 计算 Exploitability
-    let exploitability =
-        8.22 * attack_vector * attack_complexity * privileges_required * user_interaction;
+    let exploitability = 8.22
+        * cvss.attack_vector
+        * cvss.attack_complexity
+        * cvss.privileges_required
+        * cvss.user_interaction;
 
     // 计算基础分数
     let base_score = if impact <= 0.0 {
         0.0
-    } else if scope_changed {
+    } else if cvss.scope_changed {
         (1.25 * (impact + exploitability) - 0.7).min(10.0)
     } else {
         (impact + exploitability).min(10.0)
@@ -426,89 +436,95 @@ fn calculate_cvss_v3_score(vector: &str) -> f64 {
 
 /// 从源文件提取依赖引用
 pub fn extract_imports_from_source(path: &Path, source: &str) -> Vec<String> {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "rs" => extract_rust_imports(source),
+        "js" | "jsx" => extract_js_imports(source),
+        _ => Vec::new(),
+    }
+}
+
+/// 解析 Rust 源码中的 use / extern crate 引用。
+fn extract_rust_imports(source: &str) -> Vec<String> {
     let mut imports = Vec::new();
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    match ext {
-        "rs" => {
-            // 解析 Rust use 和 extern crate
-            for line in source.lines() {
-                let line = line.trim();
-                if line.starts_with("use ") {
-                    // 提取 crate 名称
-                    if let Some(crate_name) =
-                        line.strip_prefix("use ").and_then(|s| s.split("::").next())
-                    {
-                        let crate_name = crate_name.trim();
-                        if !crate_name.is_empty()
-                            && crate_name != "super"
-                            && crate_name != "self"
-                            && crate_name != "crate"
-                        {
-                            imports.push(crate_name.to_string());
-                        }
-                    }
-                } else if line.starts_with("extern crate ") {
-                    if let Some(crate_name) = line
-                        .strip_prefix("extern crate ")
-                        .and_then(|s| s.split(';').next())
-                    {
-                        let crate_name = crate_name.trim();
-                        if !crate_name.is_empty() {
-                            imports.push(crate_name.to_string());
-                        }
-                    }
+    for line in source.lines() {
+        let line = line.trim();
+
+        if line.starts_with("use ") {
+            // 提取 crate 名称
+            if let Some(crate_name) = line.strip_prefix("use ").and_then(|s| s.split("::").next()) {
+                let crate_name = crate_name.trim();
+                if !crate_name.is_empty()
+                    && crate_name != "super"
+                    && crate_name != "self"
+                    && crate_name != "crate"
+                {
+                    imports.push(crate_name.to_string());
+                }
+            }
+        } else if line.starts_with("extern crate ") {
+            if let Some(crate_name) = line
+                .strip_prefix("extern crate ")
+                .and_then(|s| s.split(';').next())
+            {
+                let crate_name = crate_name.trim();
+                if !crate_name.is_empty() {
+                    imports.push(crate_name.to_string());
                 }
             }
         }
-        "js" | "jsx" => {
-            // 解析 JavaScript import 和 require
-            for line in source.lines() {
-                let line = line.trim();
-
-                // import ... from '...'
-                if line.starts_with("import ") && line.contains(" from ") {
-                    if let Some(module) = line.split(" from ").nth(1) {
-                        let module = module
-                            .trim()
-                            .trim_end_matches(';')
-                            .trim_matches(|c| c == '\'' || c == '"');
-                        // 跳过相对路径
-                        if !module.starts_with('.') {
-                            // 处理 scoped packages
-                            let module = if module.starts_with('@') {
-                                module.split('/').take(2).collect::<Vec<_>>().join("/")
-                            } else {
-                                module.split('/').next().unwrap_or(module).to_string()
-                            };
-                            imports.push(module);
-                        }
-                    }
-                }
-                // require('...')
-                else if line.contains("require(") {
-                    if let Some(start) = line.find("require(") {
-                        let after = &line[start + 8..];
-                        if let Some(end) = after.find(')') {
-                            let module =
-                                after[..end].trim().trim_matches(|c| c == '\'' || c == '"');
-                            if !module.starts_with('.') {
-                                let module = if module.starts_with('@') {
-                                    module.split('/').take(2).collect::<Vec<_>>().join("/")
-                                } else {
-                                    module.split('/').next().unwrap_or(module).to_string()
-                                };
-                                imports.push(module);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
     }
 
     imports
+}
+
+/// 解析 JavaScript 源码中的 import / require 引用。
+fn extract_js_imports(source: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+
+    for line in source.lines() {
+        let line = line.trim();
+
+        // import ... from '...'
+        if line.starts_with("import ") && line.contains(" from ") {
+            if let Some(module) = line.split(" from ").nth(1) {
+                let module = module
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim_matches(|c| c == '\'' || c == '"');
+                push_npm_import(&mut imports, module);
+            }
+        }
+        // require('...')
+        else if line.contains("require(") {
+            if let Some(start) = line.find("require(") {
+                let after = &line[start + 8..];
+                if let Some(end) = after.find(')') {
+                    let module = after[..end].trim().trim_matches(|c| c == '\'' || c == '"');
+                    push_npm_import(&mut imports, module);
+                }
+            }
+        }
+    }
+
+    imports
+}
+
+/// 跳过相对路径，归一化后加入 imports。
+fn push_npm_import(imports: &mut Vec<String>, module: &str) {
+    // 跳过相对路径
+    if !module.starts_with('.') {
+        imports.push(normalize_npm_module(module));
+    }
+}
+
+/// 归一化 npm 模块名：scoped 包保留 @scope/name，其余只取第一段。
+fn normalize_npm_module(module: &str) -> String {
+    if module.starts_with('@') {
+        module.split('/').take(2).collect::<Vec<_>>().join("/")
+    } else {
+        module.split('/').next().unwrap_or(module).to_string()
+    }
 }
 
 /// 将 Cargo crate 名称转换为 Rust import 名称
