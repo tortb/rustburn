@@ -80,9 +80,9 @@ fn test_covered_file_scores_below_no_test_file() {
     );
     let covered = TestAnalyzer.analyze(&ctx_covered);
     assert!(covered.confidence.is_full(), "有完整覆盖率时应为 Full");
-    // 覆盖率缺口10×0.5 + 密度缺口40×0.3 + 断言缺口96.67×0.2 ≈ 36.33
+    // 覆盖率缺口10×0.40 + 密度缺口40×0.25 + 断言缺口96.67×0.35 ≈ 47.83
     assert!(
-        (covered.risk_score - 36.333).abs() < 0.5,
+        (covered.risk_score - 47.833).abs() < 0.5,
         "covered risk={:.2}",
         covered.risk_score
     );
@@ -194,10 +194,39 @@ fn test_it() {
     // 断言密度缺口 = 100 - min(100, 0/10*20) = 100
     let assertion_gap = 100.0f64 - (0.0f64 / 10.0f64 * 20.0f64).min(100.0f64);
     assert_eq!(assertion_gap, 100.0);
+    // 覆盖率缺口 50×0.40 + 密度缺口 80×0.25 + 断言缺口 100×0.35 + 空壳惩罚 15 = 90。
+    // 零断言触发显式空壳惩罚，而不只是靠断言密度连续值（否则会是 75）。
     assert!(
-        result.risk_score >= 50.0,
-        "空壳测试风险应偏高，实际 {}",
+        (result.risk_score - 90.0).abs() < 0.01,
+        "空壳测试风险应为 90，实际 {}",
         result.risk_score
+    );
+    assert_eq!(
+        result.detail["empty_shell"], true,
+        "空壳测试必须在 detail 中显式标记"
+    );
+}
+
+/// 验收 4.2 规则 2 的反例：字符串字面量里的 `#[cfg(test)]` 不是测试信号，
+/// 不得被误判为内部 test mod（回归 strip_comments 未置空字符串内容的 bug）。
+#[test]
+fn test_string_literal_cfg_test_is_not_inline_test() {
+    let impl_source = r##"
+fn find(pattern: &str) -> Option<usize> {
+    let needle = "#[cfg(test)]";
+    pattern.find(needle)
+}
+"##;
+    let files = vec![TestFileInput {
+        path: "src/search.rs".to_string(),
+        source: impl_source.to_string(),
+        language: Language::Rust,
+        loc: 5,
+    }];
+    let ctx = build_test_context(&files, None, &TestPathRules::default());
+    assert!(
+        !ctx.test_files.contains_key("src/search.rs"),
+        "字符串字面量中的 #[cfg(test)] 不应触发测试检测"
     );
 }
 
