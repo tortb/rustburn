@@ -3,12 +3,16 @@
 //! 每新增一种语言，只需实现 [LanguageAdapter] trait 并在 [adapter_for]
 //! 注册表中增加一行；五个 DimensionAnalyzer 不感知任何语言细节。
 
+mod go;
 mod js;
 mod mock_lang;
+mod profile;
 mod rust;
 
+pub use go::{go_assertion_count, go_cover_to_cobertura, go_module_from_gomod, GoAdapter};
 pub use js::JsAdapter;
 pub use mock_lang::MockLangAdapter;
+pub use profile::{LanguageProfile, LockfileParser, TestConventionConfig};
 pub use rust::RustAdapter;
 
 use crate::model::Language;
@@ -76,9 +80,30 @@ pub fn adapter_for(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
     match lang {
         Language::Rust => Some(Box::new(RustAdapter)),
         Language::JavaScript => Some(Box::new(JsAdapter)),
+        Language::Go => Some(Box::new(GoAdapter)),
         // 架构解耦验收（SPEC v2 §9）：mock 语言只新增此文件 + 注册表一行。
         Language::Mock => Some(Box::new(MockLangAdapter)),
         Language::Unknown => None,
+    }
+}
+
+/// 语言配置档案注册表：新增语言时在这里加一行即可。
+///
+/// 每个档案注册该语言的测试约定（测试命名 / 覆盖率报告）与锁文件解析器，
+/// TestAnalyzer / DependencyAnalyzer 不感知这些语言特定知识（见 profile.rs）。
+pub fn profile_for(lang: Language) -> Option<LanguageProfile> {
+    match lang {
+        Language::Go => Some(LanguageProfile {
+            language: Language::Go,
+            test_conventions: TestConventionConfig {
+                // Go 强制测试文件命名约定：同目录 `{name}_test.go`
+                test_file_patterns: &["{name}_test.go"],
+                // Go 原生覆盖率报告（`go tool cover` 输出，非 lcov/cobertura）
+                coverage_report_globs: &["coverage.out"],
+            },
+            lockfile_parsers: &[&crate::dependency::GoSumLockfileParser],
+        }),
+        _ => None,
     }
 }
 
@@ -87,6 +112,7 @@ fn ts_language(lang: Language) -> Option<TsLanguage> {
     match lang {
         Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
         Language::JavaScript | Language::Mock => Some(tree_sitter_javascript::LANGUAGE.into()),
+        Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
         Language::Unknown => None,
     }
 }
@@ -103,31 +129,42 @@ pub(crate) fn parse_source(lang: Language, source: &str) -> Result<Tree, ParseEr
         .ok_or_else(|| ParseError::ParseFailed("parser 返回空结果".to_string()))
 }
 
-/// 通用链式 else-if 判断（rust/js/mock 三个适配器共用，SPEC v2 §2.1 禁止事项 2-A）。
+/// 通用链式 else-if 判断（rust/js/mock/go 四个适配器共用，SPEC v2 §2.1 禁止事项 2-A）。
 ///
 /// `if_kind` / `block_kind` 为语言相关节点名（如 `if_expression`/`block`），
-/// 其余判定逻辑对三种语言完全一致，故收敛到此公共实现避免重复代码。
+/// 其余判定逻辑对各语言完全一致，故收敛到此公共实现避免重复代码。
+///
+/// 两种 else-if 的 AST 形态都被识别：
+/// - rust/js：`else` 分支被 `else_clause` 容器包装，else-if 是容器的子节点；
+/// - go：`else` 关键字与外层 if 同属父节点，else-if **直接**是外层 if 的
+///   `alternative` 字段（无容器包装）。
 pub(crate) fn chained_else_if<'tree>(if_kind: &str, block_kind: &str, node: &Node<'tree>) -> bool {
     if node.kind() != if_kind {
         return false;
     }
 
-    // ① 定位 else 分支容器；② 该容器必须是外层 if 的 alternative 字段
-    let else_clause = match node.parent() {
-        Some(p) if p.kind() == "else_clause" => p,
+    // ① 定位外层 if 及其 alternative 字段节点
+    // rust/js：alternative 是 else_clause 容器；go：alternative 就是 else-if 本身
+    let (outer_if, alt) = match node.parent() {
+        Some(p) if p.kind() == "else_clause" => (p.parent(), p),
         Some(block)
             if block.kind() == block_kind
                 && block.named_child_count() == 1
                 && block.parent().is_some_and(|p| p.kind() == "else_clause") =>
         {
-            block.parent().expect("checked above")
+            let clause = block.parent().expect("checked above");
+            (clause.parent(), clause)
         }
-        _ => return false,
+        // go：else-if 直接作为外层 if 的 alternative 字段（无 else_clause 包装）
+        Some(p) if p.kind() == if_kind => (Some(p), *node),
+        _ => (None, *node),
     };
-    let Some(outer_if) = else_clause.parent() else {
+
+    // ② 必须是外层 if 的 alternative（else）分支
+    let Some(outer_if) = outer_if else {
         return false;
     };
-    if outer_if.kind() != if_kind || !is_alternative_field(&outer_if, &else_clause) {
+    if outer_if.kind() != if_kind || !is_alternative_field(&outer_if, &alt) {
         return false;
     }
 

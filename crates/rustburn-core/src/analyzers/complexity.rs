@@ -195,18 +195,27 @@ fn is_logical_operator(node: &Node<'_>, source: &str) -> bool {
 /// 统计子树内的 if 嵌套统计。
 fn if_stats_in_subtree(node: Node<'_>, adapter: &dyn LanguageAdapter) -> IfStats {
     let mut stats = IfStats::default();
-    walk_if_stats(node, adapter, 0, false, &mut stats);
+    walk_if_stats(node, adapter, 0, false, true, &mut stats);
     stats
 }
 
 /// 递归遍历 if 节点（链式判定完全依赖 LanguageAdapter，无需源码文本）。
+///
+/// `is_root`：本次遍历的起点是否为被测函数自身。嵌套函数（闭包 / 方法）
+/// 是独立作用域，其内部 if 属于嵌套函数自己，不得算进外层函数的嵌套
+/// 深度与嵌套比例——该边界完全由 [LanguageAdapter::is_function_node] 抽象
+/// 判定，不引入任何语言特定逻辑（SPEC v2 §2 嵌套深度语义）。
 fn walk_if_stats(
     node: Node<'_>,
     adapter: &dyn LanguageAdapter,
     depth: u32,
     is_nested: bool,
+    is_root: bool,
     stats: &mut IfStats,
 ) {
+    if !is_root && adapter.is_function_node(node.kind()) {
+        return;
+    }
     if adapter.is_if_node(node.kind()) {
         stats.total += 1;
         if is_nested {
@@ -222,14 +231,14 @@ fn walk_if_stats(
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk_if_stats(child, adapter, new_depth, true, stats);
+            walk_if_stats(child, adapter, new_depth, true, false, stats);
         }
         return;
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_if_stats(child, adapter, depth, is_nested, stats);
+        walk_if_stats(child, adapter, depth, is_nested, false, stats);
     }
 }
 

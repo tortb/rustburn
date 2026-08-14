@@ -529,8 +529,41 @@ fn run() -> Result<(f64, Option<f64>), String> {
         ..Default::default()
     };
 
-    // 覆盖率报告 + 测试注册表
-    let coverage_content = rustburn_core::analyzers::test::read_coverage_report(repo_path);
+    // 覆盖率报告 + 测试注册表。
+    // 先查通用候选路径（lcov/cobertura），再按语言 profile 注册的覆盖率
+    // globs 发现（如 Go 的 coverage.out，需先转成 Cobertura 才能复用
+    // 已有的覆盖率解析器——转换逻辑在 lang/go.rs，独立于 analyzer）。
+    let coverage_content =
+        rustburn_core::analyzers::test::read_coverage_report(repo_path).or_else(|| {
+            for lang in [
+                rustburn_core::model::Language::Rust,
+                rustburn_core::model::Language::JavaScript,
+                rustburn_core::model::Language::Go,
+                rustburn_core::model::Language::Mock,
+                rustburn_core::model::Language::Unknown,
+            ] {
+                let Some(profile) = rustburn_core::lang::profile_for(lang) else {
+                    continue;
+                };
+                for glob in profile.test_conventions.coverage_report_globs {
+                    let p = repo_path.join(glob);
+                    if p.is_file() {
+                        if let Ok(content) = fs::read_to_string(&p) {
+                            // go tool cover 输出带模块前缀，从 go.mod 读取
+                            // module 路径后剥离，才能与仓库相对路径对上
+                            let module = fs::read_to_string(repo_path.join("go.mod"))
+                                .ok()
+                                .and_then(|m| rustburn_core::lang::go_module_from_gomod(&m));
+                            return Some(rustburn_core::lang::go_cover_to_cobertura(
+                                &content,
+                                module.as_deref(),
+                            ));
+                        }
+                    }
+                }
+            }
+            None
+        });
     let test_inputs: Vec<TestFileInput> = parsed_files
         .iter()
         .map(|p| TestFileInput {
@@ -719,7 +752,11 @@ fn run() -> Result<(f64, Option<f64>), String> {
             history_truncated,
             offline: cli.offline,
             osv_status: dep_analysis.query_status,
-            supported_languages: vec!["rust".to_string(), "javascript".to_string()],
+            supported_languages: vec![
+                "rust".to_string(),
+                "javascript".to_string(),
+                "go".to_string(),
+            ],
             elapsed_seconds: elapsed,
             file_count: scanned_files.len(),
             sample_size_warning,

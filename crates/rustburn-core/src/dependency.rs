@@ -8,7 +8,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::model::{DependencyFinding, Severity};
+use crate::lang::{profile_for, LockfileParser};
+use crate::model::{DependencyFinding, Language, Severity};
 
 #[derive(Error, Debug)]
 pub enum DependencyError {
@@ -36,6 +37,49 @@ pub struct DependencyAnalysis {
     pub dependencies: Vec<Dependency>,
     pub findings: Vec<DependencyFinding>,
     pub query_status: String,
+}
+
+/// go.sum 锁文件解析器（`module version hash` 三元组格式）。
+///
+/// OSV 查询时 ecosystem 使用 `Go`；OSV 的 Go 版本号不带 `v` 前缀
+/// （如 `1.21.5`），解析时去掉。`module version/go.mod` 行是模块根的
+/// go.mod 校验专用行，与同版本主行去重合并。
+pub struct GoSumLockfileParser;
+
+impl LockfileParser for GoSumLockfileParser {
+    fn name(&self) -> &'static str {
+        "go.sum"
+    }
+
+    fn lockfile_names(&self) -> &'static [&'static str] {
+        &["go.sum"]
+    }
+
+    fn parse(&self, content: &str) -> Vec<Dependency> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut deps = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let (Some(module), Some(version)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            let version = version.strip_suffix("/go.mod").unwrap_or(version);
+            let version = version.strip_prefix('v').unwrap_or(version);
+            if seen.insert((module.to_string(), version.to_string())) {
+                deps.push(Dependency {
+                    name: module.to_string(),
+                    version: version.to_string(),
+                    ecosystem: "Go".to_string(),
+                });
+            }
+        }
+        deps
+    }
 }
 
 /// 解析 Cargo.lock 文件
@@ -691,8 +735,39 @@ pub fn extract_imports_from_source(path: &Path, source: &str) -> Vec<String> {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "rs" => extract_rust_imports(source),
         "js" | "jsx" => extract_js_imports(source),
+        "go" => extract_go_imports(source),
         _ => Vec::new(),
     }
+}
+
+/// 解析 Go 源码中的 import 引用（含 `import (...) {}` 块与单行 `import "x"`，
+/// 以及 `alias "path"` 形式）。返回模块路径，与 go.sum 的 module 字段对齐。
+fn extract_go_imports(source: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+    let mut in_block = false;
+    for line in source.lines() {
+        let line = line.trim();
+        if line.starts_with("import") {
+            in_block = in_block || line.contains('(');
+        } else if in_block {
+            if line.contains(')') {
+                in_block = false;
+                continue;
+            }
+        } else {
+            continue;
+        }
+        // 提取引号包裹的模块路径（import "fmt" / gin "github.com/gin-gonic/gin"）
+        if let Some(start) = line.find('"') {
+            if let Some(end) = line[start + 1..].find('"') {
+                let module = &line[start + 1..start + 1 + end];
+                if !module.is_empty() && !imports.iter().any(|m| m == module) {
+                    imports.push(module.to_string());
+                }
+            }
+        }
+    }
+    imports
 }
 
 /// 解析 Rust 源码中的 use / extern crate 引用。
@@ -806,6 +881,31 @@ pub fn analyze_dependencies(
         all_deps.extend(npm_deps);
     }
 
+    // 按语言 profile 注册的锁文件解析器（Go 的 go.sum 等）。
+    // 语言特定知识（锁文件名、格式、OSV ecosystem）全部收敛在 profile 表，
+    // 这里只做通用的"按注册表驱动"遍历。
+    for lang in [
+        Language::Rust,
+        Language::JavaScript,
+        Language::Go,
+        Language::Mock,
+        Language::Unknown,
+    ] {
+        let Some(profile) = profile_for(lang) else {
+            continue;
+        };
+        for parser in profile.lockfile_parsers {
+            for name in parser.lockfile_names() {
+                let path = repo_path.join(name);
+                if path.is_file() {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        all_deps.extend(parser.parse(&content));
+                    }
+                }
+            }
+        }
+    }
+
     // 查询 OSV
     let (findings, query_status) = if offline {
         (Vec::new(), "offline".to_string())
@@ -911,6 +1011,54 @@ version = "1.0.44"
 
         let deps = parse_package_lock(&lock_path).unwrap();
         assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_go_sum() {
+        let go_sum = r#"golang.org/x/net v0.0.0-20210716203947-853a461950ff h1:...
+golang.org/x/net v0.0.0-20210716203947-853a461950ff/go.mod h1:...
+github.com/gin-gonic/gin v1.9.0 h1:9A7PoREQDLoWbo0KJmi1MavEhI9FmiKFZ/7RwvC0zPc=
+github.com/stretchr/testify v1.8.4 h1:abc
+"#;
+        let deps = GoSumLockfileParser.parse(go_sum);
+        // 两条 golang.org/x/net（含 /go.mod 行）去重合并为 1 条
+        assert_eq!(deps.len(), 3, "go.sum 应解析出 3 个唯一 (module, version)");
+        let xnet = deps
+            .iter()
+            .find(|d| d.name == "golang.org/x/net")
+            .expect("应解析出 golang.org/x/net");
+        assert_eq!(xnet.version, "0.0.0-20210716203947-853a461950ff");
+        assert_eq!(xnet.ecosystem, "Go");
+        let gin = deps
+            .iter()
+            .find(|d| d.name == "github.com/gin-gonic/gin")
+            .expect("应解析出 github.com/gin-gonic/gin");
+        // v 前缀被去掉（OSV Go ecosystem 使用不带 v 的版本号）
+        assert_eq!(gin.version, "1.9.0");
+        assert_eq!(gin.ecosystem, "Go");
+        assert!(deps
+            .iter()
+            .all(|d| d.ecosystem == "Go" && !d.version.starts_with('v')));
+    }
+
+    #[test]
+    fn test_extract_go_imports() {
+        let source = r#"
+package main
+
+import (
+    "fmt"
+    gin "github.com/gin-gonic/gin"
+    "github.com/stretchr/testify/assert"
+)
+
+func main() { fmt.Println("hi") }
+"#;
+        let imports = extract_imports_from_source(Path::new("main.go"), source);
+        assert!(imports.contains(&"fmt".to_string()));
+        assert!(imports.contains(&"github.com/gin-gonic/gin".to_string()));
+        assert!(imports.contains(&"github.com/stretchr/testify/assert".to_string()));
+        assert_eq!(imports.len(), 3);
     }
 
     #[test]

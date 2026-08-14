@@ -8,6 +8,7 @@ use std::fmt;
 pub enum Language {
     Rust,
     JavaScript,
+    Go,
     /// 极简 mock 语言（仅用于验证架构解耦，不会被实际扫描产生）
     Mock,
     Unknown,
@@ -18,6 +19,7 @@ impl fmt::Display for Language {
         match self {
             Language::Rust => write!(f, "rust"),
             Language::JavaScript => write!(f, "javascript"),
+            Language::Go => write!(f, "go"),
             Language::Mock => write!(f, "mock"),
             Language::Unknown => write!(f, "unknown"),
         }

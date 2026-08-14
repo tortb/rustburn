@@ -249,3 +249,90 @@ fn distinct_vulns_are_not_deduplicated() {
     assert_eq!(findings[0].id, "RUSTSEC-2026-0008");
     assert_eq!(findings[1].id, "RUSTSEC-2026-0183");
 }
+
+/// Go 生态依赖走 OSV 查询：go.sum 解析出的 module+version 以 ecosystem="Go"
+/// 提交查询，命中真实存在的已知漏洞模块（golang.org/x/text v0.3.0 有
+/// CVE-2020-14040 / CVE-2021-38561），返回的 finding 必须保留 Go 生态信息。
+#[test]
+fn go_ecosystem_dependency_queries_osv_with_go_ecosystem() {
+    let server = MockServer::start(|method, path, _body| {
+        if method == "POST" && path == "/v1/querybatch" {
+            (
+                200,
+                "application/json",
+                r#"{"results":[{"vulns":[
+                    {"id":"CVE-2021-38561","modified":"2022-08-30T03:22:42Z"}
+                ]}]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/CVE-2021-38561" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"CVE-2021-38561","summary":"golang.org/x/text: improper input validation","database_specific":{"severity":"MEDIUM"}}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else {
+            (404, "application/json", b"{}".to_vec())
+        }
+    });
+
+    let deps = vec![Dependency {
+        name: "golang.org/x/text".to_string(),
+        version: "0.3.0".to_string(),
+        ecosystem: "Go".to_string(),
+    }];
+
+    let findings = query_osv_with_base(&deps, &server.addr).expect("query_osv");
+    assert_eq!(findings.len(), 1);
+    let f = &findings[0];
+    assert_eq!(f.id, "CVE-2021-38561");
+    assert_eq!(f.ecosystem, "Go", "finding 必须保留 Go 生态标记");
+    assert_eq!(f.package_name, "golang.org/x/text");
+    assert_eq!(f.version, "0.3.0");
+    assert_eq!(f.severity, Severity::Medium);
+    assert!(!f.severity_estimated, "真实严重度不应标记为估算");
+}
+
+/// go.sum 完整链路：GoSumLockfileParser 解析 → OSV 查询携带 Go 生态。
+#[test]
+fn go_sum_pipeline_produces_go_findings() {
+    use rustburn_core::dependency::GoSumLockfileParser;
+    use rustburn_core::lang::LockfileParser;
+
+    let go_sum = r#"golang.org/x/text v0.3.0 h1:mockhash
+golang.org/x/text v0.3.0/go.mod h1:mockhash
+"#;
+    let deps = GoSumLockfileParser.parse(go_sum);
+    assert_eq!(deps.len(), 1, "/go.mod 行应与主行去重");
+    assert_eq!(deps[0].ecosystem, "Go");
+    assert_eq!(deps[0].version, "0.3.0", "v 前缀应被去掉");
+
+    let server = MockServer::start(|method, path, _body| {
+        if method == "POST" && path == "/v1/querybatch" {
+            (
+                200,
+                "application/json",
+                r#"{"results":[{"vulns":[{"id":"CVE-2021-38561","modified":"2022-08-30T03:22:42Z"}]}]}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else if method == "GET" && path == "/v1/vulns/CVE-2021-38561" {
+            (
+                200,
+                "application/json",
+                r#"{"id":"CVE-2021-38561","summary":"x/text improper input validation","database_specific":{"severity":"HIGH"}}"#
+                    .to_string()
+                    .into_bytes(),
+            )
+        } else {
+            (404, "application/json", b"{}".to_vec())
+        }
+    });
+    let findings = query_osv_with_base(&deps, &server.addr).expect("query_osv");
+    assert_eq!(findings.len(), 1, "go.sum 中的已知漏洞模块应被 OSV 查到");
+    assert_eq!(findings[0].package_name, "golang.org/x/text");
+    assert_eq!(findings[0].ecosystem, "Go");
+}

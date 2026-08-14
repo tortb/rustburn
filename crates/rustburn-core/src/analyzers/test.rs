@@ -4,11 +4,17 @@
 //!
 //! 公式（SPEC v2 §4）：
 //! ```text
-//! test_risk_value = 覆盖率缺口 × 0.5 + 测试密度缺口 × 0.3 + 断言密度缺口 × 0.2
+//! test_risk_value = 覆盖率缺口 × 0.40 + 测试密度缺口 × 0.25 + 断言密度缺口 × 0.35
+//!                  + 空壳测试惩罚（断言数为 0 时 +15）
 //! 覆盖率缺口 = 100 - 覆盖率%（仅当能解析到 lcov/cobertura 报告时使用）
 //! 测试密度缺口 = 100 - min(100, 对应测试文件总行数 / 该文件行数 × 100)
 //! 断言密度缺口 = 100 - min(100, 测试文件里 assert/expect 类调用数 / 测试文件行数 × 20)
 //! ```
+//!
+//! 断言密度权重（0.35）高于测试密度（0.25）：有测试文件但零断言是比
+//! 测试密度不足更严重的信号——前者完全没有验证任何东西，后者只是覆盖面
+//! 不够。且"零断言"与"少量断言"是质变而非量变，因此在断言数为 0 时
+//! 额外追加固定惩罚项 [EMPTY_SHELL_PENALTY]，而不是只靠连续值体现。
 
 use std::collections::HashMap;
 
@@ -21,6 +27,19 @@ use crate::model::{Confidence, DimensionResult, Language};
 
 /// 覆盖缺失时无任何仓库数据的兜底值（中性，不代表 0 或 100 风险）。
 const NEUTRAL_MISSING: f64 = 50.0;
+
+/// 覆盖率缺口权重。
+const COVERAGE_WEIGHT: f64 = 0.40;
+/// 测试密度缺口权重。
+const DENSITY_WEIGHT: f64 = 0.25;
+/// 断言密度缺口权重（最高子项：零断言比密度不足更严重）。
+const ASSERTION_WEIGHT: f64 = 0.35;
+
+/// 空壳测试惩罚：有测试代码（test_loc > 0）但断言数为 0 时追加的固定分。
+///
+/// 语义上与断言密度连续值互补：密度缺口只刻画"量的差距"，惩罚项
+/// 刻画"零断言 = 完全没验证"这一质变。
+const EMPTY_SHELL_PENALTY: f64 = 15.0;
 
 /// 测试文件路径映射规则（SPEC v2 §4.2 规则 3：可配置正则，不硬编码死路径）。
 #[derive(Debug, Clone)]
@@ -388,9 +407,16 @@ fn match_tests_dir(
 
 /// 统计测试文件中位于测试函数体内的断言调用数（上下文感知，SPEC v2 §4 禁止事项 4-B）。
 pub fn count_assertions(source: &str, lang: Language) -> u32 {
+    // Go 的断言惯用法（testify require/assert、`t.Errorf`/`t.Fatalf` 等）
+    // 与 rust/js 的 assert/expect 模式不同，通过语言适配层计数，
+    // 不在分析器内堆语言特定逻辑。
+    if lang == Language::Go {
+        return crate::lang::go_assertion_count(source);
+    }
     let bodies = match lang {
         Language::Rust => rust_test_bodies(source),
         Language::JavaScript | Language::Mock => js_test_bodies(source),
+        Language::Go => unreachable!("Go handled above"),
         Language::Unknown => Vec::new(),
     };
     bodies
@@ -508,6 +534,33 @@ fn find_byte(bytes: &[u8], from: usize, b: u8) -> Option<usize> {
     bytes[from..].iter().position(|&x| x == b).map(|p| from + p)
 }
 
+/// 判断 `quote` 处的 `"` 是否为 Rust 原始字符串 `r#"..."#` / `br#"..."#` 的
+/// 开引号，返回需要按 `"` + N 个 `#` 闭合的 `#` 数量（普通字符串返回 0）。
+fn rust_raw_string_hashes(bytes: &[u8], quote: usize) -> usize {
+    let mut j = quote;
+    let mut hashes = 0usize;
+    while j > 0 && bytes[j - 1] == b'#' {
+        hashes += 1;
+        j -= 1;
+    }
+    if hashes == 0 {
+        // r"..." 与普通字符串闭合规则一致，无需特殊处理
+        return 0;
+    }
+    let before = if j >= 2 && bytes[j - 1] == b'r' && (bytes[j - 2] == b'b' || bytes[j - 2] == b'c')
+    {
+        j - 2
+    } else if j >= 1 && bytes[j - 1] == b'r' {
+        j - 1
+    } else {
+        return 0;
+    };
+    if before > 0 && (bytes[before - 1].is_ascii_alphanumeric() || bytes[before - 1] == b'_') {
+        return 0;
+    }
+    hashes
+}
+
 /// 去除字符串与注释内容（替换为等长空格，保留行结构）。
 fn strip_comments(source: &str) -> String {
     let bytes = source.as_bytes();
@@ -517,6 +570,7 @@ fn strip_comments(source: &str) -> String {
     let mut in_block = false;
     let mut in_str = false;
     let mut sc = 0u8;
+    let mut raw_hashes = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
         if in_line {
@@ -539,10 +593,25 @@ fn strip_comments(source: &str) -> String {
             continue;
         }
         if in_str {
-            if b == sc {
+            // 字符串内容也必须替换为空格（此前只跳过不置空，导致字符串里的
+            // `#[cfg(test)]`、`{`/`}` 等文本残留，造成测试误检与 brace 错配）
+            out[i] = b' ';
+            if raw_hashes > 0 {
+                // Rust 原始字符串以 `"` + N 个 `#` 闭合
+                if b == b'"' && (1..=raw_hashes).all(|k| bytes.get(i + k) == Some(&b'#')) {
+                    in_str = false;
+                    for k in 1..=raw_hashes {
+                        out[i + k] = b' ';
+                    }
+                    i += raw_hashes;
+                }
+            } else if b == sc {
                 in_str = false;
             } else if b == b'\\' {
-                i += 1;
+                if bytes.get(i + 1).is_some() {
+                    out[i + 1] = b' ';
+                    i += 1;
+                }
             }
             i += 1;
             continue;
@@ -558,9 +627,15 @@ fn strip_comments(source: &str) -> String {
                 out[i] = b' ';
                 i += 1;
             }
-            b'"' | b'`' => {
+            b'"' => {
                 in_str = true;
-                sc = b;
+                sc = b'"';
+                raw_hashes = rust_raw_string_hashes(bytes, i);
+            }
+            b'`' => {
+                in_str = true;
+                sc = b'`';
+                raw_hashes = 0;
             }
             // Rust 生命周期 `'a` 不是字符串：若同行找不到闭合 `'`，视为代码。
             // 否则前一个生命周期会让 in_str 悬空，吞掉后续 `//` 注释标记，
@@ -642,7 +717,15 @@ pub fn compute_risk(ctx: &FileContext<'_>) -> Option<f64> {
     };
     let density_gap = 100.0 - (test_loc as f64 / impl_loc as f64 * 100.0).min(100.0);
     let assertion_gap = 100.0 - (assertions as f64 / test_loc.max(1) as f64 * 20.0).min(100.0);
-    Some((coverage_gap * 0.5 + density_gap * 0.3 + assertion_gap * 0.2).clamp(0.0, 100.0))
+    let mut risk = coverage_gap * COVERAGE_WEIGHT
+        + density_gap * DENSITY_WEIGHT
+        + assertion_gap * ASSERTION_WEIGHT;
+    // 空壳测试：有测试代码但零断言 = 完全没有验证任何东西，
+    // 与"少量断言"是质变，额外追加固定惩罚项。
+    if assertions == 0 && test_loc > 0 {
+        risk += EMPTY_SHELL_PENALTY;
+    }
+    Some(risk.clamp(0.0, 100.0))
 }
 
 impl DimensionAnalyzer for TestAnalyzer {
@@ -677,6 +760,7 @@ impl DimensionAnalyzer for TestAnalyzer {
         let stats = &ctx.repo.test.test_files[ctx.path];
         let test_loc: u32 = stats.iter().map(|s| s.test_loc).sum();
         let assertions: u32 = stats.iter().map(|s| s.assertion_count).sum();
+        let empty_shell = assertions == 0 && test_loc > 0;
 
         DimensionResult {
             raw_value: risk,
@@ -687,6 +771,7 @@ impl DimensionAnalyzer for TestAnalyzer {
                 "test_loc": test_loc,
                 "assertion_count": assertions,
                 "coverage": coverage,
+                "empty_shell": empty_shell,
             }),
         }
     }

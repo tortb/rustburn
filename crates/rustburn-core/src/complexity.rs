@@ -14,6 +14,8 @@ pub fn detect_language(path: &str) -> Language {
         Language::Rust
     } else if path_lower.ends_with(".js") || path_lower.ends_with(".jsx") {
         Language::JavaScript
+    } else if path_lower.ends_with(".go") {
+        Language::Go
     } else {
         Language::Unknown
     }

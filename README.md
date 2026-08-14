@@ -87,10 +87,11 @@ rustburn 默认**不忽略**任何目录（包括 `.git/`、`target/`、`node_mo
 
 - Rust（`.rs`）
 - JavaScript / JSX（`.js`、`.jsx`）
+- Go（`.go`）——含 `go.sum` 依赖扫描（OSV `Go` 生态）、`go tool cover` 覆盖率报告（自动转换为 Cobertura）、`{name}_test.go` 测试文件识别
 
 其他语言自动跳过，不会导致扫描失败。符号链接默认不跟随。
 
-语言支持通过 `LanguageAdapter` 适配器扩展：每新增一种语言只需实现该 trait 并在注册表登记一行，五个评分维度（复杂度 / 重复 / 测试 / 变更风险 / 依赖）零改动即可复用（有架构解耦测试保障）。
+语言支持通过 `LanguageAdapter` 适配器扩展：每新增一种语言只需实现该 trait 并在注册表登记一行，五个评分维度（复杂度 / 重复 / 测试 / 变更风险 / 依赖）零改动即可复用（有架构解耦测试保障）。测试约定与锁文件格式等语言特定知识通过 `LanguageProfile` 配置表按语言注册。
 
 ## HTML 报告内容
 
@@ -111,9 +112,9 @@ rustburn 的评分完全透明，每一层公式与源码实现严格一致。v2
 
 | 维度 | 输入 | 风险分来源 |
 | --- | --- | --- |
-| complexity（复杂度） | 语言 AST | 0.5 × 仓库内百分位 + 0.5 × 绝对阈值（McCabe / ESLint max-depth） |
+| complexity（复杂度） | 语言 AST | 样本 ≥5 时 0.5 × 仓库内百分位 + 0.5 × 绝对阈值（McCabe / ESLint max-depth）；样本 <5 时仅绝对阈值 |
 | duplication（重复代码） | 语言 AST | min(100, 结构哈希重复行占比 × 150) |
-| test（测试质量） | 文件命名约定 + lcov/cobertura 覆盖率 | 覆盖率缺口 ×0.5 + 测试密度缺口 ×0.3 + 断言密度缺口 ×0.2 |
+| test（测试质量） | 文件命名约定 + lcov/cobertura 覆盖率 | 覆盖率缺口 ×0.4 + 测试密度缺口 ×0.25 + 断言密度缺口 ×0.35，零断言触发 +15 空壳测试惩罚 |
 | change_risk（变更风险） | git 历史时间线 | 近期事故密度 ×0.6 + 近期改动频率 ×0.2 + 作者分散度 ×0.2 |
 | dependency（依赖风险） | 锁文件 + OSV 漏洞查询 | CVSS 严重度 ×0.6 + CVE 数量档位 ×0.25 |
 
@@ -144,7 +145,7 @@ final_heat = base_risk × trend_coefficient   # 本版未启用趋势，恒为 1
 1. 同目录 `<文件名>_test.<ext>` / `<文件名>.test.<ext>` / `test_<文件名>.<ext>`；
 2. Rust 文件内部 `#[cfg(test)] mod tests` 块（分母扣除 test mod 行数）；
 3. `tests/` 目录 + 可配置正则映射（默认尝试 `src/`、`lib/`、`app/` 源根）；
-4. 找不到 → `DataMissing("未找到对应测试文件")`，覆盖率缺口按仓库均值填充。
+4. 找不到 → 测试维度标记 `NotApplicable`，权重按比例分摊到其余维度（不参与本次合成的维度在报告中显著标注）。
 
 ### 重复代码：结构哈希
 
