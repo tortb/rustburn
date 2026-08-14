@@ -107,11 +107,7 @@ pub(crate) fn parse_source(lang: Language, source: &str) -> Result<Tree, ParseEr
 ///
 /// `if_kind` / `block_kind` 为语言相关节点名（如 `if_expression`/`block`），
 /// 其余判定逻辑对三种语言完全一致，故收敛到此公共实现避免重复代码。
-pub(crate) fn chained_else_if<'tree>(
-    if_kind: &str,
-    block_kind: &str,
-    node: &Node<'tree>,
-) -> bool {
+pub(crate) fn chained_else_if<'tree>(if_kind: &str, block_kind: &str, node: &Node<'tree>) -> bool {
     if node.kind() != if_kind {
         return false;
     }

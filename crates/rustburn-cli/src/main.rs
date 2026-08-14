@@ -11,7 +11,7 @@ use rustburn_core::aggregate::{calculate_repo_total_heat_score, calculate_top_ri
 use rustburn_core::analyzer::DimensionAnalyzer;
 use rustburn_core::analyzers::change_risk::{change_risk_value, ChangeRiskAnalyzer};
 use rustburn_core::analyzers::complexity::{
-    absolute_complexity_score, complexity_raw_value, repo_percentile, ComplexityAnalyzer,
+    complexity_raw_value, complexity_risk_score, ComplexityAnalyzer,
 };
 use rustburn_core::analyzers::dependency::{dependency_risk, DependencyAnalyzer};
 use rustburn_core::analyzers::duplication::{
@@ -491,13 +491,13 @@ fn run() -> Result<(f64, Option<f64>), String> {
         ));
     }
     if scanned_files.len() == 1 {
-        warnings.push("单文件仓库：percentile 设为 50".to_string());
+        warnings.push("单文件仓库：复杂度百分位样本不足（< 5），仅按绝对阈值计算".to_string());
     }
 
     let sample_size_warning = (scanned_files.len() as u32) < cli.min_files;
     if sample_size_warning {
         warnings.push(format!(
-            "样本量较小（{} 个文件 < {}）：百分位排名统计噪声较大，请结合绝对阈值分数判断",
+            "样本量较小（{} 个文件 < {}）：百分位排名统计噪声较大；若文件数低于 5，复杂度百分位分量不参与计算，请以绝对阈值分数为准",
             scanned_files.len(),
             cli.min_files
         ));
@@ -550,13 +550,15 @@ fn run() -> Result<(f64, Option<f64>), String> {
     // Phase 5: 计算各维度仓库均值（DataMissing 填充用）
     let now = Utc::now().timestamp();
 
-    // 复杂度均值
+    // 复杂度均值（与 ComplexityAnalyzer 同一公式：样本不足时百分位不参与）
     let mut complexity_risks: Vec<f64> = Vec::new();
     for p in parsed_files.iter().filter(|p| p.tree.is_some()) {
         let raw = complexity_raw_value(&p.complexity);
-        let pct = repo_percentile(raw, &repo.complexity_raw_values);
-        let abs = absolute_complexity_score(&p.complexity);
-        complexity_risks.push((0.5 * pct + 0.5 * abs).clamp(0.0, 100.0));
+        complexity_risks.push(complexity_risk_score(
+            raw,
+            &repo.complexity_raw_values,
+            &p.complexity,
+        ));
     }
     repo.complexity_risk_mean = mean(&complexity_risks);
 

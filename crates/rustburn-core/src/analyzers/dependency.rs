@@ -36,14 +36,24 @@ impl DimensionAnalyzer for DependencyAnalyzer {
 
     fn analyze(&self, ctx: &FileContext<'_>) -> DimensionResult {
         // 数据缺失（离线 / OSV 查询失败 / 文件语法解析不完整导致 import 不可靠）：
-        // 用仓库均值填充，禁止硬编码 0/100。
+        // 用仓库均值填充，禁止硬编码 0/100。但若仓库没有任何文件的依赖数据可用
+        // （均值不存在，如单文件仓库离线扫描），填充会退化成自证循环，
+        // 直接标记 NotApplicable，权重分摊到其余维度（§7-B）。
         if ctx.dependency.data_incomplete || ctx.parse_incomplete {
-            let risk = ctx.repo.dependency_risk_mean.unwrap_or(50.0);
             let reason = if ctx.dependency.data_incomplete {
                 "依赖数据不完整（离线模式或 OSV 查询失败）".to_string()
             } else {
                 "语法解析不完整，依赖引用无法可靠提取".to_string()
             };
+            if ctx.repo.dependency_risk_mean.is_none() {
+                return DimensionResult {
+                    raw_value: 0.0,
+                    risk_score: 0.0,
+                    confidence: Confidence::NotApplicable,
+                    detail: json!({ "reason": "仓库无可用依赖数据，依赖维度不适用" }),
+                };
+            }
+            let risk = ctx.repo.dependency_risk_mean.unwrap_or(0.0);
             return DimensionResult {
                 raw_value: risk,
                 risk_score: risk,

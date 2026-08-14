@@ -218,9 +218,19 @@ impl DimensionAnalyzer for DuplicationAnalyzer {
             };
         }
 
-        // 语法完全无法解析：数据缺失，用仓库均值填充
+        // 语法完全无法解析：数据缺失，用仓库均值填充。
+        // 若仓库内没有任何可解析文件（均值不存在），填充退化成自证循环，
+        // 直接标记 NotApplicable，权重分摊到其余维度（§7-B）。
         if ctx.tree.is_none() {
-            let risk = ctx.repo.duplication_risk_mean.unwrap_or(50.0);
+            if ctx.repo.duplication_risk_mean.is_none() {
+                return DimensionResult {
+                    raw_value: 0.0,
+                    risk_score: 0.0,
+                    confidence: Confidence::NotApplicable,
+                    detail: json!({ "reason": "仓库内无可解析文件，重复度维度不适用" }),
+                };
+            }
+            let risk = ctx.repo.duplication_risk_mean.unwrap_or(0.0);
             return DimensionResult {
                 raw_value: risk,
                 risk_score: risk,

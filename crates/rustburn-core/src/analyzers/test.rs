@@ -34,7 +34,10 @@ pub struct TestPathRules {
 impl Default for TestPathRules {
     fn default() -> Self {
         Self {
-            tests_dir_pattern: Regex::new(r"^tests/(.+)\.(rs|js|jsx)$")
+            // workspace 兼容：匹配任意层级下的 tests/ 目录
+            // （如 pingora-core/tests/test_basic.rs、tests/foo.rs），
+            // prefix = crate 根，rel = tests/ 内相对路径。
+            tests_dir_pattern: Regex::new(r"^(?P<prefix>.*)tests/(?P<rel>.+\.(?:rs|js|jsx))$")
                 .expect("tests dir pattern valid"),
             source_roots: vec!["src".to_string(), "lib".to_string(), "app".to_string()],
         }
@@ -246,20 +249,39 @@ fn same_dir_test_candidates(path: &str) -> Vec<String> {
     ]
 }
 
-/// 提取 Rust 文件中 `#[cfg(test)] mod tests` 块：返回 (mod 行数, 断言数)。
+/// 提取 Rust 文件中所有 `#[cfg(test)] mod` 块：返回 (总行数, 总断言数)。
+///
+/// 一个文件可能包含多个 `#[cfg(test)]` 块（如 compression/mod.rs），
+/// 需要全部聚合，否则 impl_loc 分母会被多扣、测试密度被高估。
 fn rust_test_mod_stats(source: &str) -> Option<(u32, u32)> {
     let stripped = strip_comments(source);
-    let attr_pos = stripped.find("#[cfg(test)]")?;
-    let after = &stripped[attr_pos..];
-    let brace_pos = after.find('{')? + attr_pos;
-    let close = match_brace(stripped.as_bytes(), brace_pos)?;
-    let line_count =
-        |up_to: usize| stripped[..up_to].bytes().filter(|&b| b == b'\n').count() as u32;
-    let start_row = line_count(brace_pos);
-    let end_row = line_count(close);
-    let mod_source = mod_source_slice(source, brace_pos, close);
-    let assertions = count_assert_patterns(mod_source);
-    Some((end_row - start_row + 1, assertions))
+    let mut total_loc = 0u32;
+    let mut total_assertions = 0u32;
+    let mut search_from = 0usize;
+    while let Some(rel_attr) = stripped[search_from..].find("#[cfg(test)]") {
+        let attr_pos = search_from + rel_attr;
+        let after = &stripped[attr_pos..];
+        let Some(rel_brace) = after.find('{') else {
+            break;
+        };
+        let brace_pos = attr_pos + rel_brace;
+        let Some(close) = match_brace(stripped.as_bytes(), brace_pos) else {
+            break;
+        };
+        let line_count =
+            |up_to: usize| stripped[..up_to].bytes().filter(|&b| b == b'\n').count() as u32;
+        let start_row = line_count(brace_pos);
+        let end_row = line_count(close);
+        let mod_source = mod_source_slice(source, brace_pos, close);
+        total_loc += end_row - start_row + 1;
+        total_assertions += count_assert_patterns(mod_source);
+        search_from = close + 1;
+    }
+    if total_loc > 0 {
+        Some((total_loc, total_assertions))
+    } else {
+        None
+    }
 }
 
 fn mod_source_slice(source: &str, brace_pos: usize, close: usize) -> &str {
@@ -270,6 +292,69 @@ fn mod_source_slice(source: &str, brace_pos: usize, close: usize) -> &str {
     }
 }
 
+/// 解析测试文件路径：返回 (crate 根, tests/ 内相对路径)。
+fn split_test_path(path: &str, rules: &TestPathRules) -> Option<(String, String)> {
+    let caps = rules.tests_dir_pattern.captures(path)?;
+    let prefix = caps
+        .name("prefix")
+        .map(|m| m.as_str().trim_end_matches('/'))
+        .unwrap_or("")
+        .to_string();
+    let rel = caps.name("rel")?.as_str().to_string();
+    Some((prefix, rel))
+}
+
+/// 去掉测试命名标记：`foo_test` / `foo.test` / `test_foo` → `foo`。
+fn strip_test_markers(stem: &str) -> &str {
+    let stem = stem
+        .strip_suffix("_test")
+        .or_else(|| stem.strip_suffix(".test"))
+        .unwrap_or(stem);
+    stem.strip_prefix("test_").unwrap_or(stem)
+}
+
+/// 由测试文件路径推导可能的实现文件路径（SPEC v2 §4.2 规则 3）。
+///
+/// 覆盖三种约定：
+/// - `tests/foo_bar.rs` → `src/foo_bar.rs`（同层直配）；
+/// - 下划线连写的模块链：`tests/foo_bar.rs` → `src/foo/bar.rs`；
+/// - Rust 集成测试约定：`tests/` 顶层文件测试整个 crate，关联
+///   `src/lib.rs` / `src/main.rs`。
+fn test_to_impl_candidates(prefix: &str, rel: &str, rules: &TestPathRules) -> Vec<String> {
+    let Some((stem, ext)) = rel.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let stem = strip_test_markers(stem);
+    let mut out = Vec::new();
+    for root in &rules.source_roots {
+        let base = if prefix.is_empty() {
+            root.clone()
+        } else {
+            format!("{}/{}", prefix, root)
+        };
+        out.push(format!("{}/{}.{}", base, stem, ext));
+        if !stem.contains('/') {
+            if let Some((a, b)) = stem.rsplit_once('_') {
+                if !a.is_empty() && !b.is_empty() {
+                    out.push(format!("{}/{}/{}.{}", base, a, b, ext));
+                }
+            }
+        }
+    }
+    // Rust 集成测试约定：tests/ 顶层的每个 .rs 文件测试整个 crate
+    if !rel.contains('/') {
+        let base = if prefix.is_empty() {
+            "src".to_string()
+        } else {
+            format!("{}/src", prefix)
+        };
+        for f in ["lib.rs", "main.rs"] {
+            out.push(format!("{}/{}", base, f));
+        }
+    }
+    out
+}
+
 /// tests/ 目录映射：用可配置正则推导候选实现路径。
 fn match_tests_dir(
     file: &TestFileInput,
@@ -278,35 +363,21 @@ fn match_tests_dir(
 ) -> Option<Vec<TestFileStats>> {
     let mut matched = Vec::new();
     for t in files {
-        if !t.path.starts_with("tests/") {
+        let Some((prefix, rel)) = split_test_path(&t.path, rules) else {
+            continue;
+        };
+        if !test_to_impl_candidates(&prefix, &rel, rules)
+            .iter()
+            .any(|candidate| candidate == &file.path)
+        {
             continue;
         }
-        let caps = rules.tests_dir_pattern.captures(&t.path)?;
-        let mut stem = caps.get(1)?.as_str().to_string();
-        let ext = caps.get(2)?.as_str().to_string();
-        // 去掉测试命名标记
-        for marker in ["_test", ".test"] {
-            if let Some(stripped) = stem.strip_suffix(marker) {
-                stem = stripped.to_string();
-                break;
-            }
-        }
-        for root in &rules.source_roots {
-            let candidate = if root == "." {
-                format!("{}.{}", stem, ext)
-            } else {
-                format!("{}/{}.{}", root, stem, ext)
-            };
-            if candidate == file.path {
-                matched.push(TestFileStats {
-                    path: t.path.clone(),
-                    test_loc: t.source.lines().count().max(1) as u32,
-                    impl_loc: file.loc.max(1),
-                    assertion_count: count_assertions(&t.source, t.language),
-                });
-                break;
-            }
-        }
+        matched.push(TestFileStats {
+            path: t.path.clone(),
+            test_loc: t.source.lines().count().max(1) as u32,
+            impl_loc: file.loc.max(1),
+            assertion_count: count_assertions(&t.source, t.language),
+        });
     }
     if matched.is_empty() {
         None
@@ -358,7 +429,8 @@ fn rust_test_bodies(source: &str) -> Vec<(usize, usize)> {
     let mut i = 0;
     let mut pending_attr = false;
     while i < bytes.len() {
-        if stripped[i..].starts_with("#[test") {
+        // 用字节切片（bytes）而非 &str 切片：i 可能落在多字节字符中间
+        if bytes[i..].starts_with(b"#[test") {
             pending_attr = true;
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
@@ -486,9 +558,22 @@ fn strip_comments(source: &str) -> String {
                 out[i] = b' ';
                 i += 1;
             }
-            b'"' | b'\'' | b'`' => {
+            b'"' | b'`' => {
                 in_str = true;
                 sc = b;
+            }
+            // Rust 生命周期 `'a` 不是字符串：若同行找不到闭合 `'`，视为代码。
+            // 否则前一个生命周期会让 in_str 悬空，吞掉后续 `//` 注释标记，
+            // 使注释正文（含多字节字符与大括号）残留下来，破坏 brace 匹配。
+            b'\'' => {
+                let closes_on_line = bytes[i + 1..]
+                    .iter()
+                    .take_while(|&&c| c != b'\n')
+                    .any(|&c| c == b'\'');
+                if closes_on_line {
+                    in_str = true;
+                    sc = b'\'';
+                }
             }
             _ => {}
         }
@@ -567,18 +652,16 @@ impl DimensionAnalyzer for TestAnalyzer {
 
     fn analyze(&self, ctx: &FileContext<'_>) -> DimensionResult {
         // 找不到对应测试文件（SPEC v2 §4.2 规则 4）：
-        // 覆盖率缺口按仓库均值填充（禁止硬编码 0/100，禁止事项 4-A），
-        // 测试密度缺口与断言密度缺口天然为 100（没有任何测试代码）。
+        // 测试维度没有可用信号，标记 NotApplicable，权重由 scoring 按比例
+        // 分摊到其余维度（§7 禁止事项 7-B）。不采用"无测试=75 高风险"这类
+        // 猜测值参与计算——缺失值填充在小样本仓库会退化成自证循环。
         let Some(risk) = compute_risk(ctx) else {
-            let coverage_gap = ctx.repo.test.mean_coverage_gap.unwrap_or(NEUTRAL_MISSING);
-            let risk = (coverage_gap * 0.5 + 30.0 + 20.0).clamp(0.0, 100.0);
             return DimensionResult {
-                raw_value: risk,
-                risk_score: risk,
-                confidence: Confidence::DataMissing("未找到对应测试文件".to_string()),
+                raw_value: 0.0,
+                risk_score: 0.0,
+                confidence: Confidence::NotApplicable,
                 detail: json!({
-                    "reason": "未找到对应测试文件",
-                    "coverage_gap_filled_with": "repo_mean_or_neutral",
+                    "reason": "未找到对应测试文件（测试维度不适用，权重已重新分摊到其余维度）",
                 }),
             };
         };

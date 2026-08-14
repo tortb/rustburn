@@ -42,8 +42,8 @@ fn make_ctx<'a>(
     }
 }
 
-/// 验收：配 90% 覆盖率报告的文件，test_risk 明显低于无测试文件；
-/// 无测试文件的 confidence 必须是 DataMissing，risk 用均值填充而非 0。
+/// 验收（修订）：有测试 + 覆盖率时分数正常；无测试信号时标记 NotApplicable，
+/// 权重由 scoring 分摊到其余维度（§7 禁止事项 7-B），不再用猜测值填充。
 #[test]
 fn test_covered_file_scores_below_no_test_file() {
     let mut test_ctx = TestRepoContext::default();
@@ -87,7 +87,7 @@ fn test_covered_file_scores_below_no_test_file() {
         covered.risk_score
     );
 
-    // 无任何测试信号
+    // 无任何测试信号 → NotApplicable（不再用 75 分猜测值参与加权）
     let ctx_plain = make_ctx(
         "src/plain.rs",
         "fn plain() {}",
@@ -100,26 +100,17 @@ fn test_covered_file_scores_below_no_test_file() {
     );
     let plain = TestAnalyzer.analyze(&ctx_plain);
     assert!(
-        matches!(plain.confidence, Confidence::DataMissing(_)),
-        "无测试信号必须标记 DataMissing"
+        matches!(plain.confidence, Confidence::NotApplicable),
+        "无测试信号必须标记 NotApplicable"
     );
-    // 均值填充：覆盖率缺口 10×0.5 + 30 + 20 = 55，绝不是 0
-    assert!(
-        plain.risk_score > covered.risk_score,
-        "有覆盖率文件({:.1})应明显低于无测试文件({:.1})",
-        covered.risk_score,
-        plain.risk_score
-    );
-    assert!(
-        plain.risk_score > 0.0 && (plain.risk_score - 55.0).abs() < 0.01,
-        "无测试文件 risk 应使用均值填充（55），实际 {}",
-        plain.risk_score
-    );
+    // 被排除维度的 risk_score 不参与合成，应为 0
+    assert_eq!(plain.risk_score, 0.0);
 }
 
-/// 验收：完全没有覆盖率数据时，无测试文件 risk 用中性值填充且不是 0/100。
+/// 验收（修订）：无任何测试信号且无覆盖率数据时，
+/// 测试维度标记 NotApplicable，不再输出"中性 75"这种虚假的中间值。
 #[test]
-fn test_no_test_and_no_coverage_uses_neutral_fill() {
+fn test_no_test_and_no_coverage_is_not_applicable() {
     let repo = RepoAnalysisData::default();
     let adapter = adapter_for(Language::Rust).unwrap();
     let git = GitTimeline::default();
@@ -135,13 +126,12 @@ fn test_no_test_and_no_coverage_uses_neutral_fill() {
         &dep,
     );
     let result = TestAnalyzer.analyze(&ctx);
-    assert!(matches!(result.confidence, Confidence::DataMissing(_)));
-    // 中性 50×0.5 + 30 + 20 = 75（既不是 0 也不是 100）
     assert!(
-        (result.risk_score - 75.0).abs() < 0.01,
-        "no-test no-coverage risk={}",
-        result.risk_score
+        matches!(result.confidence, Confidence::NotApplicable),
+        "无测试信号必须标记 NotApplicable，实际 {:?}",
+        result.confidence
     );
+    assert_eq!(result.risk_score, 0.0);
 }
 
 /// 验收 4-B：空壳测试（测试函数体内无任何断言）→ 断言密度缺口接近 100。
@@ -272,6 +262,71 @@ fn test_same_dir_naming_convention() {
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].path, "src/parser_test.rs");
     assert!(stats[0].assertion_count >= 1);
+}
+
+/// 验收 4.2 规则 3（修订）：workspace 布局下 `crate/tests/` 集成测试
+/// 能映射到 crate 根 lib.rs，不再因为路径前缀 `pingora-core/` 而全部漏检。
+#[test]
+fn test_workspace_tests_dir_mapping() {
+    let files = vec![
+        TestFileInput {
+            path: "pingora-core/src/lib.rs".to_string(),
+            source: "pub mod f;".to_string(),
+            language: Language::Rust,
+            loc: 1,
+        },
+        TestFileInput {
+            path: "pingora-core/src/protocols/http/date.rs".to_string(),
+            source: "fn date() {}".to_string(),
+            language: Language::Rust,
+            loc: 1,
+        },
+        TestFileInput {
+            path: "pingora-core/tests/test_basic.rs".to_string(),
+            source: "#[test]\nfn t() {\n    assert!(true);\n}\n".to_string(),
+            language: Language::Rust,
+            loc: 3,
+        },
+    ];
+    let ctx = build_test_context(&files, None, &TestPathRules::default());
+    // 集成测试关联到 crate 根 lib.rs
+    let stats = ctx
+        .test_files
+        .get("pingora-core/src/lib.rs")
+        .expect("tests/test_basic.rs 应映射到 crate 根 lib.rs");
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].path, "pingora-core/tests/test_basic.rs");
+    // 与 test_basic 无直接关联的源码文件不应被误配
+    assert!(
+        !ctx.test_files
+            .contains_key("pingora-core/src/protocols/http/date.rs"),
+        "date.rs 不应被 test_basic.rs 误配"
+    );
+}
+
+/// 验收 4.2 规则 3：`tests/foo_bar_test.rs` → `src/foo/bar.rs` 模块链映射。
+#[test]
+fn test_tests_dir_snake_module_chain_mapping() {
+    let files = vec![
+        TestFileInput {
+            path: "src/http/v1.rs".to_string(),
+            source: "fn parse() {}".to_string(),
+            language: Language::Rust,
+            loc: 1,
+        },
+        TestFileInput {
+            path: "tests/http_v1_test.rs".to_string(),
+            source: "#[test]\nfn t() {\n    assert!(true);\n}\n".to_string(),
+            language: Language::Rust,
+            loc: 3,
+        },
+    ];
+    let ctx = build_test_context(&files, None, &TestPathRules::default());
+    let stats = ctx
+        .test_files
+        .get("src/http/v1.rs")
+        .expect("http_v1_test.rs 应映射到 src/http/v1.rs");
+    assert_eq!(stats.len(), 1);
 }
 
 /// 覆盖率解析：lcov 与 cobertura。

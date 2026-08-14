@@ -83,9 +83,19 @@ impl DimensionAnalyzer for ChangeRiskAnalyzer {
     fn analyze(&self, ctx: &FileContext<'_>) -> DimensionResult {
         let now = Utc::now().timestamp();
 
-        // 无任何 commit 数据：数据缺失，用仓库均值填充（禁止硬编码 0/100）
+        // 无任何 commit 数据：数据缺失，用仓库均值填充（禁止硬编码 0/100）。
+        // 但若整个仓库都没有 commit 数据（均值本身不存在），填充会退化成
+        // 自证循环，此时直接标记 NotApplicable，权重分摊到其余维度（§7-B）。
         if ctx.git.is_empty() {
-            let risk = ctx.repo.change_risk_mean.unwrap_or(50.0);
+            if ctx.repo.change_risk_mean.is_none() {
+                return DimensionResult {
+                    raw_value: 0.0,
+                    risk_score: 0.0,
+                    confidence: Confidence::NotApplicable,
+                    detail: json!({ "reason": "仓库无任何 git commit 数据，变更风险维度不适用" }),
+                };
+            }
+            let risk = ctx.repo.change_risk_mean.unwrap_or(0.0);
             return DimensionResult {
                 raw_value: risk,
                 risk_score: risk,

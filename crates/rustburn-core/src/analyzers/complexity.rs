@@ -258,13 +258,23 @@ pub fn absolute_complexity_score(m: &FileComplexity) -> f64 {
     0.7 * cc_band + 0.3 * depth_band
 }
 
+/// 百分位分量参与计算的仓库最小样本量。
+///
+/// 低于该阈值时，"仓库内排名"在统计上没有意义（如单文件仓库恒为 50，
+/// 会让任何简单代码被打上"仓库内居中"标签），百分位不参与计算，
+/// 权重全部让给绝对阈值分量。
+pub const MIN_PERCENTILE_SAMPLE: usize = 5;
+
 /// 仓库内百分位：升序排序、同值取最小 rank、最大值=100。
-pub fn repo_percentile(value: f64, pool: &[f64]) -> f64 {
-    if pool.is_empty() {
-        return 50.0;
+///
+/// 样本量不足（< [MIN_PERCENTILE_SAMPLE]）或所有值相同时返回 None，
+/// 表示"仓库内排名"统计上无意义，调用方应改用绝对阈值。
+pub fn repo_percentile(value: f64, pool: &[f64]) -> Option<f64> {
+    if pool.len() < MIN_PERCENTILE_SAMPLE {
+        return None;
     }
     if pool.iter().all(|v| *v == pool[0]) {
-        return 50.0;
+        return None;
     }
     let mut sorted = pool.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -278,7 +288,16 @@ pub fn repo_percentile(value: f64, pool: &[f64]) -> f64 {
     if r == 0 {
         r = sorted.len();
     }
-    (r as f64 / sorted.len() as f64 * 100.0).clamp(0.0, 100.0)
+    Some((r as f64 / sorted.len() as f64 * 100.0).clamp(0.0, 100.0))
+}
+
+/// 复杂度风险分：样本充足时 = 0.5×仓库内百分位 + 0.5×绝对阈值；
+/// 样本不足时百分位不参与，直接用绝对阈值（防止默认值滥竽充数）。
+pub fn complexity_risk_score(raw_value: f64, pool: &[f64], m: &FileComplexity) -> f64 {
+    match repo_percentile(raw_value, pool) {
+        Some(pct) => (0.5 * pct + 0.5 * absolute_complexity_score(m)).clamp(0.0, 100.0),
+        None => absolute_complexity_score(m),
+    }
 }
 
 /// ComplexityAnalyzer：依赖 [LanguageAdapter]，不感知语言细节。
@@ -291,8 +310,18 @@ impl DimensionAnalyzer for ComplexityAnalyzer {
 
     fn analyze(&self, ctx: &FileContext<'_>) -> DimensionResult {
         let Some(tree) = ctx.tree else {
-            // 完全无法解析：数据缺失，用仓库均值填充
-            let risk = ctx.repo.complexity_risk_mean.unwrap_or(50.0);
+            // 完全无法解析：数据缺失，用仓库均值填充。
+            // 若仓库内没有任何可解析文件（均值不存在），填充退化成自证循环，
+            // 直接标记 NotApplicable，权重分摊到其余维度（§7-B）。
+            if ctx.repo.complexity_risk_mean.is_none() {
+                return DimensionResult {
+                    raw_value: 0.0,
+                    risk_score: 0.0,
+                    confidence: Confidence::NotApplicable,
+                    detail: json!({ "reason": "仓库内无可解析文件，复杂度维度不适用" }),
+                };
+            }
+            let risk = ctx.repo.complexity_risk_mean.unwrap_or(0.0);
             return DimensionResult {
                 raw_value: risk,
                 risk_score: risk,
@@ -305,7 +334,8 @@ impl DimensionAnalyzer for ComplexityAnalyzer {
         let raw_value = complexity_raw_value(&metrics);
         let percentile = repo_percentile(raw_value, &ctx.repo.complexity_raw_values);
         let absolute = absolute_complexity_score(&metrics);
-        let risk = (0.5 * percentile + 0.5 * absolute).clamp(0.0, 100.0);
+        // 样本不足时百分位不参与（避免小仓库默认 50 误导），risk = 绝对阈值
+        let risk = complexity_risk_score(raw_value, &ctx.repo.complexity_raw_values, &metrics);
 
         let confidence = if metrics.parse_incomplete {
             Confidence::DataMissing("语法解析不完整".to_string())
@@ -437,9 +467,38 @@ fn check(x: i32) {
 
     #[test]
     fn test_repo_percentile_basics() {
-        assert_eq!(repo_percentile(10.0, &[]), 50.0);
-        let pool = vec![10.0, 20.0, 30.0, 40.0];
-        assert!((repo_percentile(40.0, &pool) - 100.0).abs() < 1e-9);
-        assert!((repo_percentile(10.0, &pool) - 25.0).abs() < 1e-9);
+        // 样本不足（< 5）→ 百分位无意义
+        assert_eq!(repo_percentile(10.0, &[]), None);
+        assert_eq!(repo_percentile(10.0, &[10.0, 20.0, 30.0]), None);
+        // 所有值相同 → 无法区分排名
+        assert_eq!(repo_percentile(10.0, &[10.0; 6]), None);
+        let pool = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        assert!((repo_percentile(50.0, &pool).unwrap() - 100.0).abs() < 1e-9);
+        assert!((repo_percentile(10.0, &pool).unwrap() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_complexity_risk_uses_absolute_when_sample_small() {
+        // 单文件仓库：百分位不参与，风险 = 绝对阈值，不再被默认 50 拉高
+        let adapter = RustAdapter;
+        let src = "fn f() { let x = 1; }";
+        let tree = adapter.parse(src).unwrap();
+        let m = compute_metrics(&tree, src, &adapter);
+        let raw = complexity_raw_value(&m);
+        let score = complexity_risk_score(raw, &[raw], &m);
+        assert!(
+            (score - absolute_complexity_score(&m)).abs() < 1e-9,
+            "小样本仓库复杂度应只按绝对阈值：{}",
+            score
+        );
+        // 样本充足时百分位参与，两者混合
+        let pool = vec![raw, raw + 10.0, raw + 20.0, raw + 30.0, raw + 40.0];
+        let mixed = complexity_risk_score(raw, &pool, &m);
+        assert!(
+            mixed > score,
+            "样本充足时百分位参与应抬高风险：{} vs {}",
+            mixed,
+            score
+        );
     }
 }
